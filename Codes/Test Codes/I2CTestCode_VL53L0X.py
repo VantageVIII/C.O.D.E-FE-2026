@@ -1,27 +1,35 @@
-import smbus2
+from smbus2 import SMBus
 import time
-from vl53l0x import VL53L0X  # pure Python driver
 
-BUS_NUM = 5
-MUX_ADDR = 0x70
-channels = [0, 1, 4, 5]
+BUS = 5
+ADDR = 0x29
+bus = SMBus(BUS)
 
-bus = smbus2.SMBus(BUS_NUM)
-
-def select_channel(ch):
-    bus.write_byte(MUX_ADDR, 1 << ch)
-    time.sleep(0.01)
-
-for ch in channels:
-    select_channel(ch)
-    print(f"Channel {ch}:")
+# Scan with read probe (like i2cdetect -y -r)
+print("Scanning with read probe...")
+devices = []
+for addr in range(0x03, 0x77):
     try:
-        sensor = VL53L0X(i2c_bus=BUS_NUM, i2c_address=0x29)
-        sensor.start_ranging()
-        dist = sensor.get_distance()
-        print("Distance:", dist, "mm")
-        sensor.stop_ranging()
-    except Exception as e:
-        print("Init failed:", e)
+        bus.read_byte(addr)
+        devices.append(hex(addr))
+    except OSError:
+        pass
+print("Found devices:", devices)
 
-bus.close()
+# Minimal init: start ranging
+# SYSTEM__MODE_START register is 0x000E
+bus.write_byte_data(ADDR, 0x0E, 0x01)  # start ranging
+
+time.sleep(0.05)
+
+# Read distance result registers
+print("Reading distances...")
+for i in range(10):
+    try:
+        high = bus.read_byte_data(ADDR, 0x96)
+        low = bus.read_byte_data(ADDR, 0x97)
+        dist = (high << 8) | low
+        print(f"Reading {i+1}: {dist} mm")
+    except Exception as e:
+        print("Error:", e)
+    time.sleep(0.2)
