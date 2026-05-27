@@ -1,148 +1,117 @@
-import Hobot.GPIO as GPIO
-import time, threading
+import smbus2, time, Hobot.GPIO as GPIO
 from huskylib import HuskyLensLibrary
 
-GPIO.setwarnings(False)
-GPIO.setmode(GPIO.BOARD)
+# -----------------------------
+# Colour Sensor Setup
+# -----------------------------
+bus_num = 0   # /dev/i2c-0
+addr = 0x29   # TCS34725 default address
+bus = smbus2.SMBus(bus_num)
 
-IN1 = 29
-IN2 = 31
-LEDPin = 37
-ServoPin = 32
-ENA = 33
-ButtonPin = 18
+COMMAND_BIT = 0x80
+ENABLE = 0x00
+ATIME = 0x01
+CONTROL = 0x0F
+CDATA = 0x14  # Clear data low byte
 
-outputPins = [IN1, IN2, LEDPin, ENA, ServoPin]
-GPIO.setup(outputPins, GPIO.OUT)
-GPIO.output(LEDPin, GPIO.HIGH)
-GPIO.setup(ButtonPin, GPIO.IN)
+bus.write_byte_data(addr, COMMAND_BIT | ENABLE, 0x03)
+bus.write_byte_data(addr, COMMAND_BIT | ATIME, 0xD5)
+bus.write_byte_data(addr, COMMAND_BIT | CONTROL, 0x01)
+time.sleep(0.7)
+
+def read_word(reg):
+    low = bus.read_byte_data(addr, COMMAND_BIT | reg)
+    high = bus.read_byte_data(addr, COMMAND_BIT | (reg+1))
+    return (high << 8) | low
+
+def get_rgb():
+    c = read_word(CDATA)
+    r = read_word(CDATA+2)
+    g = read_word(CDATA+4)
+    b = read_word(CDATA+6)
+    if c == 0: return (0,0,0)
+    r_std = max(0, min(255, int((r/c)*255)))
+    g_std = max(0, min(255, int((g/c)*255)))
+    b_std = max(0, min(255, int((b/c)*255)))
+    return (r_std, g_std, b_std)
+
+def is_turn_colour(rgb):
+    r,g,b = rgb
+    # thresholds with tolerance
+    if r < 80 and g < 80 and b > 150:   # blue
+        return True
+    if r > 180 and g > 100 and b < 80:  # orange
+        return True
+    return False
 
 # -----------------------------
-# Continuous Bit-Banged Motor PWM
+# Camera Setup
 # -----------------------------
-class MotorThread(threading.Thread):
-    def __init__(self, freq=200, duty=30):
-        super().__init__()
-        self.freq = freq
-        self.duty = duty
-        self.running = True
-
-    def run(self):
-        while self.running:
-            period = 1.0 / self.freq
-            high_time = (self.duty / 100.0) * period
-            low_time = period - high_time
-            GPIO.output(ENA, GPIO.HIGH)
-            time.sleep(high_time)
-            GPIO.output(ENA, GPIO.LOW)
-            time.sleep(low_time)
-
-    def update_duty(self, duty):
-        self.duty = max(0, min(100, duty))
-
-    def stop(self):
-        self.running = False
+hl = HuskyLensLibrary("SERIAL", "/dev/ttyS1", 9600)
+print("Knock:", hl.knock())
 
 # -----------------------------
-# Movement Class
+# State Machine
 # -----------------------------
-class Movement:
-    motor_thread = None
+STRAIGHT, TURN, SEARCH = 0, 1, 2
+state = STRAIGHT
+turn_timer = 0
+missing_frames = 0
+sweep_angle, sweep_dir = 70, 1
 
-    @staticmethod
-    def start_motor(power, freq=200):
-        GPIO.output(IN1, GPIO.LOW)
-        GPIO.output(IN2, GPIO.HIGH)
-        Movement.motor_thread = MotorThread(freq=freq, duty=power)
-        Movement.motor_thread.start()
-
-    @staticmethod
-    def update_motor(power):
-        if Movement.motor_thread:
-            Movement.motor_thread.update_duty(power)
-
-    @staticmethod
-    def stop_motor():
-        if Movement.motor_thread:
-            Movement.motor_thread.stop()
-            Movement.motor_thread.join()
-        GPIO.output(IN1, GPIO.LOW)
-        GPIO.output(IN2, GPIO.LOW)
-        GPIO.output(ENA, GPIO.LOW)
-
-    @staticmethod
-    def servo_angle(angle, neutral_offset=0.1):
-        neutral_ms = 1.30 + neutral_offset
-        left_ms = neutral_ms - 0.65
-        right_ms = neutral_ms + 0.65
-        pulse_ms = left_ms + ((angle - 35) / (145 - 35)) * (right_ms - left_ms)
-
-        period_ms = 20.0
-        high_time = pulse_ms / 1000.0
-        low_time = (period_ms / 1000.0) - high_time
-
-        GPIO.output(ServoPin, GPIO.HIGH)
-        time.sleep(high_time)
-        GPIO.output(ServoPin, GPIO.LOW)
-        time.sleep(low_time)
-
-# -----------------------------
-# HuskyLens Helpers
-# -----------------------------
-def steering_angle(arrow, gain_orientation=0.15, gain_position=0.08, tolerance=5):
-    dx = arrow.xHead - arrow.xTail
+def steering_angle(arrow, gain=0.15, tolerance=5):
     mid_x = (arrow.xHead + arrow.xTail) / 2
     offset = mid_x - 160
-    angle = 90 + gain_orientation * dx + gain_position * offset
+    angle = 90 + gain * offset
     angle = max(35, min(145, angle))
     if 90 - tolerance <= angle <= 90 + tolerance:
         angle = 90
     return angle
 
-hl = HuskyLensLibrary("SERIAL", "/dev/ttyS1", 9600)
-print("Knock:", hl.knock())
-
+# -----------------------------
+# Main Loop
+# -----------------------------
 try:
-    print("Waiting for button press to start...")
-    GPIO.wait_for_edge(ButtonPin, GPIO.RISING)
-    print("Button pressed, Starting line follower.")
-
-    Movement.start_motor(10, freq=200)  # slower continuous motor
-
-    angle_buffer = []
-    missing_frames = 0
-
     while True:
+        rgb = get_rgb()
         results = hl.requestAll()
-        if results:
-            missing_frames = 0
-            for r in results:
-                if r.type == "ARROW":
-                    target_angle = steering_angle(r)
-                    angle_buffer.append(target_angle)
 
-                    if len(angle_buffer) == 5:
-                        avg_angle = sum(angle_buffer) / len(angle_buffer)
-                        angle_buffer.clear()
+        if state == STRAIGHT:
+            if results:
+                missing_frames = 0
+                for r in results:
+                    if r.type == "ARROW":
+                        servo_angle = steering_angle(r)
+                        print(f"Servo={servo_angle:.1f}°")
+                        # update servo + motor here
+            else:
+                missing_frames += 1
+                if missing_frames > 10:
+                    state = SEARCH
 
-                        print(f"Average Servo={avg_angle:.1f}°")
-                        Movement.servo_angle(avg_angle, neutral_offset=0.1)
+            if is_turn_colour(rgb):
+                print("Colour sensor triggered TURN")
+                state = TURN
+                turn_timer = time.time()
 
-                        # Dynamic speed scaling
-                        deviation = abs(avg_angle - 90)
-                        speed = max(10, 10 - deviation * 0.2)  # slower on big turns
-                        Movement.update_motor(speed)
-        else:
-            missing_frames += 1
-            if missing_frames > 100:  # grace period
-                print("Line lost, stopping motor")
-                Movement.stop_motor()
+        elif state == TURN:
+            # lock servo to turn direction
+            print("Executing TURN...")
+            # set servo hard left/right + motor speed
+            if time.time() - turn_timer > 2.0:
+                state = STRAIGHT
+
+        elif state == SEARCH:
+            sweep_angle += sweep_dir * 5
+            if sweep_angle > 120 or sweep_angle < 60:
+                sweep_dir *= -1
+            print(f"Searching... Servo={sweep_angle}°")
+            # servo sweep + slow motor
+            if results:
+                state = STRAIGHT
+                missing_frames = 0
+
         time.sleep(0.05)
 
 except KeyboardInterrupt:
-    print("Interrupted by user")
-
-finally:
-    Movement.stop_motor()
-    GPIO.cleanup()
-    print("GPIO cleanup complete.")
+    print("Interrupted")
