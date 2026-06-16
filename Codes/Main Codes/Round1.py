@@ -25,15 +25,12 @@ GPIO.setup(ButtonPin, GPIO.IN)
 # Movement Class
 # -----------------------------
 class Movement:
-    
-    # Servo Corrections
     current_angle = 0
     offset = 0
     _servo_thread_running = False
     pulse_ms = 1.5
     neutral_ms = 1.4
 
-    # Forward Movement
     @staticmethod
     def motor_forward(power=50, freq=200):
         period = 1.0 / freq
@@ -45,29 +42,14 @@ class Movement:
         time.sleep(high_time)
         GPIO.output(ENA, GPIO.LOW)
         time.sleep(low_time)
-    
-    # Backward Movement
-    @staticmethod
-    def motor_reverse(power=50, freq=200):
-        period = 1.0 / freq
-        high_time = (power / 100.0) * period
-        low_time = period - high_time
-        GPIO.output(IN1, GPIO.HIGH)
-        GPIO.output(IN2, GPIO.LOW)
-        GPIO.output(ENA, GPIO.HIGH)
-        time.sleep(high_time)
-        GPIO.output(ENA, GPIO.LOW)
-        time.sleep(low_time)
-    
-    # Servo Angle
+
     @staticmethod
     def set_steering_angle(wheel_angle):
         corrected = wheel_angle + Movement.offset
         Movement.current_angle = max(-40, min(40, corrected))
         Movement.pulse_ms = Movement.neutral_ms + (Movement.current_angle / 40.0) * 0.5
         Movement.pulse_ms = max(1.0, min(2.0, Movement.pulse_ms))
-    
-    # Maintain Servo Angle
+
     @staticmethod
     def _servo_loop():
         while Movement._servo_thread_running:
@@ -79,20 +61,17 @@ class Movement:
             GPIO.output(ServoPin, GPIO.LOW)
             elapsed = time.time() - start
             time.sleep(max(0, frame - elapsed))
-    
-    #Servo Startup
+
     @staticmethod
     def start_servo():
         if not Movement._servo_thread_running:
             Movement._servo_thread_running = True
             threading.Thread(target=Movement._servo_loop, daemon=True).start()
-    
-    # Servo 'Brake'
+
     @staticmethod
     def stop_servo():
         Movement._servo_thread_running = False
-    
-    # Motor Brake
+
     @staticmethod
     def brake():
         GPIO.output(IN1, GPIO.HIGH)
@@ -121,9 +100,12 @@ class GyroSensor:
                 raw_yaw = struct.unpack('<h', data[4:6])[0] / 32768.0 * 180
                 if self.base_yaw is None:
                     self.base_yaw = raw_yaw
-                self.yaw = (raw_yaw - self.base_yaw) % 360
+                self.yaw = raw_yaw - self.base_yaw
+                # Limit yaw to -180..+180
                 if self.yaw > 180:
                     self.yaw -= 360
+                elif self.yaw < -180:
+                    self.yaw += 360
 
 # -----------------------------
 # Colour Sensor Class
@@ -193,20 +175,22 @@ while True:
     # Detect orientation once
     if rotation_array == [0]:
         if (within_tolerance(r, 142) and within_tolerance(g, 87) and within_tolerance(b, 63)):
-            rotation_array = [0, 90, 180, 270]  # clockwise
+            rotation_array = [0, 90, 180, -90]  # clockwise
             print("\nClockwise rotation sequence selected")
         elif (within_tolerance(r, 104) and within_tolerance(g, 105) and within_tolerance(b, 117)):
-            rotation_array = [0, -90, -180, -270]  # anticlockwise
+            rotation_array = [0, -90, -180, 90]  # anticlockwise
             print("\nCounterclockwise rotation sequence selected")
 
     target_angle = rotation_array[current_index]
     error = target_angle - gyro.yaw
-    raw_angle = max(-40, min(40, error))
+
+    # Invert error so servo turns correctly
+    raw_angle = max(-40, min(40, -error))
 
     Movement.set_steering_angle(raw_angle)
     Movement.motor_forward(50)
 
-    print(f"Target={target_angle}° | Rotation={gyro.yaw:.2f}° | Error={error:.2f}° | RGB={rgb} | Lap={lap_count}")
+    print(f"Target={target_angle}° | Rotation={gyro.yaw:.2f}° | Error={error:.2f}° | RawAngle={raw_angle:.1f}° | RGB={rgb} | Lap={lap_count}")
 
     # Advance when same colour is seen again and close to target
     if abs(error) < 5:
