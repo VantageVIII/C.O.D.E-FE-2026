@@ -183,45 +183,5 @@ while GPIO.input(ButtonPin) == GPIO.LOW:
     time.sleep(0.1)
 
 print("Button pressed, starting forward movement...")
-Movement.start_servo()
 
-while True:
-    gyro.update()
-    rgb = color.get_rgb()
-    r, g, b = rgb
 
-    # Detect orientation once
-    if rotation_array == [0]:
-        if (within_tolerance(r, 142) and within_tolerance(g, 87) and within_tolerance(b, 63)):
-            rotation_array = [0, 90, 180, 270]  # clockwise
-            print("\nClockwise rotation sequence selected")
-        elif (within_tolerance(r, 104) and within_tolerance(g, 105) and within_tolerance(b, 117)):
-            rotation_array = [0, -90, -180, -270]  # anticlockwise
-            print("\nCounterclockwise rotation sequence selected")
-
-    target_angle = rotation_array[current_index]
-    error = target_angle - gyro.yaw
-    raw_angle = max(-40, min(40, error))
-
-    Movement.set_steering_angle(raw_angle)
-    Movement.motor_forward(50)
-
-    print(f"Target={target_angle}° | Rotation={gyro.yaw:.2f}° | Error={error:.2f}° | RGB={rgb} | Lap={lap_count}")
-
-    # Advance when same colour is seen again and close to target
-    if abs(error) < 5:
-        if (within_tolerance(r, 142) and within_tolerance(g, 87) and within_tolerance(b, 63)) or \
-           (within_tolerance(r, 104) and within_tolerance(g, 105) and within_tolerance(b, 117)):
-            current_index += 1
-            if current_index >= len(rotation_array):
-                current_index = 0
-                lap_count += 1
-                print(f"\nLap {lap_count} complete")
-
-    if lap_count >= max_laps:
-        Movement.brake()
-        Movement.stop_servo()
-        print("\nCourse complete. Car stopped.")
-        break
-
-    time.sleep(0.01)
