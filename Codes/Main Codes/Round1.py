@@ -25,61 +25,51 @@ GPIO.setup(ButtonPin, GPIO.IN)
 # Movement Class
 # -----------------------------
 class Movement:
-    current_angle = 0
-    offset = 0          # Trim this by ±2–3 if one turn direction is consistently tighter/wider
+    current_angle         = 0
+    offset                = 0      # trim ±2–3 if one direction turns tighter/wider than the other
+    neutral_ms            = 1.4
+    # Initialise pulse_ms to neutral, NOT 1.5 — prevents the servo from
+    # snapping right the moment the servo thread starts.
+    pulse_ms              = 1.4
+
     _servo_thread_running = False
-    pulse_ms = 1.5
-    neutral_ms = 1.4
+    _motor_thread_running = False
+    _motor_power          = 0      # shared duty-cycle value, written by main thread,
+                                   # read by motor thread — range 0–100
 
-    @staticmethod
-    def motor_forward(power=50, freq=200):
-        period = 1.0 / freq
-        high_time = (power / 100.0) * period
-        low_time = period - high_time
-        GPIO.output(IN1, GPIO.LOW)
-        GPIO.output(IN2, GPIO.HIGH)
-        GPIO.output(ENA, GPIO.HIGH)
-        time.sleep(high_time)
-        GPIO.output(ENA, GPIO.LOW)
-        time.sleep(low_time)
-
+    # ── Servo bit-bang ────────────────────────────────────────────────────────
     @staticmethod
     def set_steering_angle(wheel_angle, max_angle=40, full_range=False):
         """
-        Set the steering servo angle.
-
-        full_range=False (default / normal driving):
-            Uses calibrated neutral_ms as centre.
-            pulse = neutral_ms ± 0.5 ms
-
-        full_range=True (turn mode):
-            Maps across the full physical 1.0–2.0 ms servo span,
-            centred at 1.5 ms regardless of neutral trim.
-            At max_angle this hits exactly 1.0 ms or 2.0 ms,
-            giving the maximum possible physical deflection.
+        full_range=False  normal driving: centres on calibrated neutral_ms (1.4 ms).
+        full_range=True   turn mode:      centres at 1.5 ms so ±max_angle maps
+                          across the widest safe physical range (SERVO_TURN_MIN_MS
+                          to SERVO_TURN_MAX_MS).
         """
         corrected = wheel_angle + Movement.offset
         Movement.current_angle = max(-max_angle, min(max_angle, corrected))
 
         if full_range:
-            # Centre at 1.5 ms so ±max_angle maps to exactly 1.0–2.0 ms
             Movement.pulse_ms = 1.5 + (Movement.current_angle / max_angle) * 0.5
+            Movement.pulse_ms = max(SERVO_TURN_MIN_MS, min(SERVO_TURN_MAX_MS, Movement.pulse_ms))
         else:
             Movement.pulse_ms = Movement.neutral_ms + (Movement.current_angle / max_angle) * 0.5
-
-        Movement.pulse_ms = max(1.0, min(2.0, Movement.pulse_ms))
+            Movement.pulse_ms = max(1.0, min(2.0, Movement.pulse_ms))
 
     @staticmethod
     def _servo_loop():
+        """Bit-bang a 50 Hz servo signal.  Runs in its own daemon thread."""
         while Movement._servo_thread_running:
-            high_time = Movement.pulse_ms / 1000.0
-            frame = 0.02
-            start = time.time()
+            high_time  = Movement.pulse_ms / 1000.0
+            frame_time = 0.02          # 50 Hz → 20 ms frame
+            t0 = time.time()
             GPIO.output(ServoPin, GPIO.HIGH)
             time.sleep(high_time)
             GPIO.output(ServoPin, GPIO.LOW)
-            elapsed = time.time() - start
-            time.sleep(max(0, frame - elapsed))
+            elapsed = time.time() - t0
+            remainder = frame_time - elapsed
+            if remainder > 0:
+                time.sleep(remainder)
 
     @staticmethod
     def start_servo():
@@ -90,9 +80,68 @@ class Movement:
     @staticmethod
     def stop_servo():
         Movement._servo_thread_running = False
+        GPIO.output(ServoPin, GPIO.LOW)
+
+    # ── Motor bit-bang ────────────────────────────────────────────────────────
+    @staticmethod
+    def set_motor_forward(power=50):
+        """
+        Set direction to forward and update the target duty cycle.
+        The motor thread reads _motor_power and handles all PWM timing —
+        this call returns immediately so it never blocks the main loop.
+        """
+        GPIO.output(IN1, GPIO.LOW)
+        GPIO.output(IN2, GPIO.HIGH)
+        Movement._motor_power = max(0, min(100, int(power)))
+
+    @staticmethod
+    def _motor_loop():
+        """
+        Bit-bang ~200 Hz PWM on ENA in its own daemon thread.
+        Completely decoupled from the main loop so timing is consistent
+        regardless of gyro reads, colour reads, or print statements.
+        """
+        freq   = 200
+        period = 1.0 / freq    # 5 ms per PWM cycle
+        while Movement._motor_thread_running:
+            pwr = Movement._motor_power
+            if pwr > 0:
+                high_time = (pwr / 100.0) * period
+                low_time  = period - high_time
+                GPIO.output(ENA, GPIO.HIGH)
+                time.sleep(high_time)
+                GPIO.output(ENA, GPIO.LOW)
+                if low_time > 0:
+                    time.sleep(low_time)
+            else:
+                # Power is zero — keep ENA low for the full period
+                GPIO.output(ENA, GPIO.LOW)
+                time.sleep(period)
+
+    @staticmethod
+    def start_motor():
+        if not Movement._motor_thread_running:
+            # Direction defaults to forward; caller sets it before the first
+            # set_motor_forward() if needed.
+            GPIO.output(IN1, GPIO.LOW)
+            GPIO.output(IN2, GPIO.HIGH)
+            Movement._motor_thread_running = True
+            threading.Thread(target=Movement._motor_loop, daemon=True).start()
+
+    @staticmethod
+    def stop_motor():
+        """Stop the motor thread and ensure ENA is left low."""
+        Movement._motor_power = 0
+        Movement._motor_thread_running = False
+        time.sleep(0.015)          # allow thread to finish its current pulse
+        GPIO.output(ENA, GPIO.LOW)
 
     @staticmethod
     def brake():
+        """Hard brake: short IN1/IN2, kill ENA, stop motor thread."""
+        Movement._motor_power = 0
+        Movement._motor_thread_running = False
+        time.sleep(0.015)          # allow thread to finish its current pulse
         GPIO.output(IN1, GPIO.HIGH)
         GPIO.output(IN2, GPIO.HIGH)
         GPIO.output(ENA, GPIO.LOW)
@@ -120,7 +169,6 @@ class GyroSensor:
                 if self.base_yaw is None:
                     self.base_yaw = raw_yaw
                 self.yaw = raw_yaw - self.base_yaw
-                # Limit yaw to -180..+180
                 if self.yaw > 180:
                     self.yaw -= 360
                 elif self.yaw < -180:
@@ -141,7 +189,7 @@ class ColorSensor:
         time.sleep(0.7)
 
     def read_word(self, reg):
-        low = self.bus.read_byte_data(self.addr, self.COMMAND_BIT | reg)
+        low  = self.bus.read_byte_data(self.addr, self.COMMAND_BIT | reg)
         high = self.bus.read_byte_data(self.addr, self.COMMAND_BIT | (reg + 1))
         return (high << 8) | low
 
@@ -163,12 +211,11 @@ class ColorSensor:
         return (r_std, g_std, b_std)
 
 # -----------------------------
-# Helper: tolerance check
+# Helpers
 # -----------------------------
 def within_tolerance(value, target, tol=0.05):
     return abs(value - target) <= target * tol
 
-# Helper: normalize angle error to handle 180/-180 wrapping
 def normalize_angle_error(target, current):
     error = target - current
     if error > 180:
@@ -177,51 +224,68 @@ def normalize_angle_error(target, current):
         error += 360
     return error
 
+# ------------------------------------------------------------------
+# Tuning constants — only touch these to adjust behaviour
+# ------------------------------------------------------------------
+NORMAL_SPEED       = 15    # motor duty cycle during straight driving
+CORRECTION_SPEED   = 15    # motor duty cycle during heading correction
+TURN_SPEED         = 40    # motor duty cycle during the main turn phase
+TURN_CRAWL_SPEED   = 30    # motor duty cycle during settle phase (barely rolling)
+TURN_MAX_ANGLE     = 75    # servo angle during turns, degrees (±75)
+TURN_SETTLE_FRAMES = 6     # frames the servo is held at full lock before
+                           # accelerating — gives wheels time to reach endpoint
+
+# Extend servo range slightly beyond the standard 1.0–2.0 ms spec for
+# maximum physical deflection.  If the servo grunts or buzzes at the
+# extremes, change these back to 1.0 and 2.0.
+SERVO_TURN_MIN_MS  = 0.9
+SERVO_TURN_MAX_MS  = 2.1
+# ------------------------------------------------------------------
+
 # -----------------------------
-# Main Loop
+# Main
 # -----------------------------
-gyro = GyroSensor()
+gyro  = GyroSensor()
 color = ColorSensor()
 
 rotation_array = [0]
-current_index = 0
-lap_count = 0
-max_laps = 3
+current_index  = 0
+lap_count      = 0
+max_laps       = 3
 orientation_colour = None
 
-# Manual turn mode variables
-manual_turn_mode = False
-manual_turn_target = 0
+manual_turn_mode        = False
+manual_turn_target      = 0
 manual_turn_start_angle = 0
-manual_turn_frames = 0
-manual_turn_pulse_mode = False
+manual_turn_frames      = 0
+manual_turn_pulse_mode  = False
 manual_turn_pulse_frames = 0
-last_color_detected = None
-color_read_threshold = 10   # frames to wait before allowing same color to be read again
-correction_mode = False
-correction_target = 0
-correction_frames = 0
-
-# ------------------------------------------------------------------
-# Turn constants — change only these two values to tune sharpness
-# ------------------------------------------------------------------
-TURN_MAX_ANGLE  = 75    # servo deflection limit during turns (degrees, ±75)
-TURN_SPEED      = 55    # motor power during turns — lower = tighter radius
-# ------------------------------------------------------------------
+manual_turn_direction   = None   # "left" or "right" — locked at turn entry
+last_color_detected     = None
+color_read_threshold    = 10
+correction_mode         = False
+correction_target       = 0
+correction_frames       = 0
 
 print("Waiting for button press to start...")
 while GPIO.input(ButtonPin) == GPIO.LOW:
     time.sleep(0.1)
 
-print("Button pressed, starting forward movement...")
+print("Button pressed — starting up...")
+
+# Centre the servo at neutral BEFORE starting its thread so the wheels
+# do not twitch to one side on power-up.
+Movement.set_steering_angle(0)
 Movement.start_servo()
 
-# Wait for gyro to stabilize and calibrate
+# Start the motor bit-bang thread (motor is idle until set_motor_forward is called)
+Movement.start_motor()
+
 print("Calibrating gyro...")
-for i in range(50):    # 50 update cycles to stabilize
+for _ in range(50):
     gyro.update()
     time.sleep(0.01)
-print(f"Gyro calibrated. Base yaw: {gyro.base_yaw:.2f}°, Current yaw: {gyro.yaw:.2f}°")
+print(f"Gyro calibrated.  Base yaw: {gyro.base_yaw:.2f}°  Current: {gyro.yaw:.2f}°")
 
 frame_count = 0
 
@@ -231,20 +295,20 @@ while True:
     r, g, b = rgb
     frame_count += 1
 
-    # Detect orientation once
+    # ── Orientation detection (runs once) ────────────────────────────────────
     if orientation_colour is None:
         if (155 <= r <= 185) and (85 <= g <= 125) and (50 <= b <= 90):
-            rotation_array = [0, -105, 15, 75]   # anticlockwise
+            rotation_array    = [5, -95, 175, 95]   # anticlockwise
             orientation_colour = "orange"
             print("\nCounterclockwise rotation sequence selected")
         elif (85 <= r <= 110) and (90 <= g <= 115) and (85 <= b <= 120):
-            rotation_array = [0, 105, -15, -75]  # clockwise
+            rotation_array    = [-5, 95, -175, -95]  # clockwise
             orientation_colour = "blue"
             print("\nClockwise rotation sequence selected")
 
-    # Color detection logic
+    # ── Colour flags ─────────────────────────────────────────────────────────
     is_orientation_color = False
-    is_opposite_color = False
+    is_opposite_color    = False
 
     if orientation_colour == "orange":
         if (155 <= r <= 185) and (85 <= g <= 125) and (50 <= b <= 90):
@@ -257,125 +321,154 @@ while True:
         elif (155 <= r <= 185) and (85 <= g <= 125) and (50 <= b <= 90):
             is_opposite_color = True
 
-    # ------------------------------------------------------------------
-    # Handle manual turn mode
-    # ------------------------------------------------------------------
+    # ── Manual turn mode ─────────────────────────────────────────────────────
     if manual_turn_mode:
-        # Opposite colour triggers the final pulse phase
         if is_opposite_color and last_color_detected != "opposite" and not manual_turn_pulse_mode:
-            manual_turn_pulse_mode = True
+            manual_turn_pulse_mode   = True
             manual_turn_pulse_frames = 0
-            last_color_detected = "opposite"
-            print(f"\nOpposite color detected, entering pulse phase...")
+            last_color_detected      = "opposite"
+            print("\nOpposite color detected — entering pulse phase...")
 
         error = normalize_angle_error(manual_turn_target, gyro.yaw)
 
+        # Direction lock: keep the servo within the half-range that matches
+        # the direction captured at turn entry.  Prevents the servo crossing
+        # centre if the gyro error briefly flips sign mid-corner.
+        #   "left"  → allowed range [-TURN_MAX_ANGLE,  0]
+        #   "right" → allowed range [0,  TURN_MAX_ANGLE]
+        # Decide raw_angle based on error sign
+        if error > 0:
+            raw_angle = TURN_MAX_ANGLE    # left turn (anticlockwise)
+        else:
+            raw_angle = -TURN_MAX_ANGLE   # right turn (clockwise)
+
+        # Lock the range based on manual_turn_direction
+        if manual_turn_direction == "left":
+        # allow only positive angles (0 → +TURN_MAX_ANGLE)
+            raw_angle = max(0, min(TURN_MAX_ANGLE, raw_angle))
+        else:  # "right"
+            # allow only negative angles (−TURN_MAX_ANGLE → 0)
+            raw_angle = max(-TURN_MAX_ANGLE, min(0, raw_angle))
+
+        Movement.set_steering_angle(raw_angle, max_angle=TURN_MAX_ANGLE, full_range=True)
+
         if manual_turn_pulse_mode:
-            # Pulse phase: hold full-lock steering for 8 frames then exit
+            # ── Pulse phase: full lock, drive, exit after 8 frames ──────────
             manual_turn_pulse_frames += 1
-            raw_angle = -TURN_MAX_ANGLE if error > 0 else TURN_MAX_ANGLE
+            Movement.set_motor_forward(TURN_SPEED)
 
             if manual_turn_pulse_frames >= 8:
-                manual_turn_mode = False
-                manual_turn_pulse_mode = False
-                manual_turn_frames = 0
-                current_index += 1
-                print(f"\nPulse complete, advancing to index {current_index}. Current angle: {gyro.yaw:.2f}°")
+                manual_turn_mode        = False
+                manual_turn_pulse_mode  = False
+                manual_turn_frames      = 0
+                current_index          += 1
+                print(f"\nPulse complete — advancing to index {current_index}.  "
+                      f"Current angle: {gyro.yaw:.2f}°")
         else:
-            # Regular turn: lock to full deflection throughout
             manual_turn_frames += 1
-            raw_angle = -TURN_MAX_ANGLE if error > 0 else TURN_MAX_ANGLE
 
-        # full_range=True maps ±TURN_MAX_ANGLE to the full 1.0–2.0 ms servo range
-        Movement.set_steering_angle(raw_angle, max_angle=TURN_MAX_ANGLE, full_range=True)
-        Movement.motor_forward(TURN_SPEED)
-        print(f"MANUAL TURN | Target={manual_turn_target}° | Current={gyro.yaw:.2f}° | "
-              f"Error={error:.2f}° | RawAngle={raw_angle:.1f}° | RGB={rgb}")
+            if manual_turn_frames <= TURN_SETTLE_FRAMES:
+                # ── Settle phase ─────────────────────────────────────────────
+                # Servo is already commanding full lock (set above).
+                # Crawl slowly so the wheels physically reach their endpoint
+                # before the car builds speed into the corner.
+                Movement.set_motor_forward(TURN_CRAWL_SPEED)
+                print(f"TURN SETTLE  frame={manual_turn_frames}/{TURN_SETTLE_FRAMES} | "
+                      f"Target={manual_turn_target}° | Yaw={gyro.yaw:.2f}° | "
+                      f"Pulse={Movement.pulse_ms:.3f} ms | RGB={rgb}")
+            else:
+                # ── Full turn phase ───────────────────────────────────────────
+                Movement.set_motor_forward(TURN_SPEED)
+                print(f"MANUAL TURN  Target={manual_turn_target}° | Yaw={gyro.yaw:.2f}° | "
+                      f"Error={error:.2f}° | Angle={raw_angle:.0f}° | "
+                      f"Pulse={Movement.pulse_ms:.3f} ms | RGB={rgb}")
 
-    # ------------------------------------------------------------------
-    # Correction mode
-    # ------------------------------------------------------------------
+    # ── Correction mode ───────────────────────────────────────────────────────
     elif correction_mode:
         if is_orientation_color and last_color_detected != "orientation" and current_index == 0:
-            manual_turn_mode = True
-            manual_turn_frames = 0
-            manual_turn_pulse_mode = False
+            manual_turn_mode         = True
+            manual_turn_frames       = 0
+            manual_turn_pulse_mode   = False
             manual_turn_pulse_frames = 0
-            correction_mode = False
-            manual_turn_start_angle = gyro.yaw
+            correction_mode          = False
+            manual_turn_start_angle  = gyro.yaw
             if rotation_array[current_index] >= 0:
-                manual_turn_target = rotation_array[current_index] + 50
+                manual_turn_target = rotation_array[current_index] - 40
             else:
-                manual_turn_target = rotation_array[current_index] - 50
+                manual_turn_target = rotation_array[current_index] + 40
 
             last_color_detected = "orientation"
-            print(f"\nOrientation color detected during correction! Entering manual turn. "
-                  f"Target: {rotation_array[current_index]}° → Manual target: {manual_turn_target:.2f}°")
+            print(f"\nOrientation colour during correction — entering manual turn.  "
+                  f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}°")
+            # Lock the direction now so it can't flip mid-turn
+            _init_err = normalize_angle_error(manual_turn_target, gyro.yaw)
+            manual_turn_direction = "left" if _init_err > 0 else "right"
+            print(f"Turn direction locked: {manual_turn_direction}")
         else:
-            error = normalize_angle_error(correction_target, gyro.yaw)
+            error     = normalize_angle_error(correction_target, gyro.yaw)
             raw_angle = max(-55, min(55, -error))
-
             Movement.set_steering_angle(raw_angle)
-            Movement.motor_forward(60)
-
-            print(f"CORRECTION | Target={correction_target}° | Current={gyro.yaw:.2f}° | "
-                  f"Error={error:.2f}° | RawAngle={raw_angle:.1f}° | RGB={rgb}")
+            Movement.set_motor_forward(CORRECTION_SPEED)
+            print(f"CORRECTION  Target={correction_target}° | Yaw={gyro.yaw:.2f}° | "
+                  f"Error={error:.2f}° | Angle={raw_angle:.1f}° | RGB={rgb}")
 
             correction_frames -= 1
             if correction_frames <= 0:
                 correction_mode = False
-                print(f"\nCorrection complete, returning to normal mode")
+                print("\nCorrection complete — returning to normal mode")
 
-    # ------------------------------------------------------------------
-    # Normal mode
-    # ------------------------------------------------------------------
+    # ── Normal mode ───────────────────────────────────────────────────────────
     else:
         if is_orientation_color and last_color_detected != "orientation" and current_index == 0:
-            manual_turn_mode = True
-            manual_turn_frames = 0
-            manual_turn_pulse_mode = False
+            manual_turn_mode         = True
+            manual_turn_frames       = 0
+            manual_turn_pulse_mode   = False
             manual_turn_pulse_frames = 0
-            manual_turn_start_angle = gyro.yaw
+            manual_turn_start_angle  = gyro.yaw
             if rotation_array[current_index] >= 0:
-                manual_turn_target = rotation_array[current_index] + 50
+                manual_turn_target = rotation_array[current_index] + 40
             else:
-                manual_turn_target = rotation_array[current_index] - 50
+                manual_turn_target = rotation_array[current_index] - 40
 
             last_color_detected = "orientation"
-            print(f"\nOrientation color detected! Starting manual 50° turn. "
-                  f"Target: {rotation_array[current_index]}° → Manual target: {manual_turn_target:.2f}°")
+            print(f"\nOrientation colour detected — starting manual 50° turn.  "
+                  f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}°")
+            # Lock the direction now so it can't flip mid-turn
+            _init_err = normalize_angle_error(manual_turn_target, gyro.yaw)
+            manual_turn_direction = "left" if _init_err > 0 else "right"
+            print(f"Turn direction locked: {manual_turn_direction}")
         else:
-            # Normal straight driving with gyro correction
+            # Straight driving with gyro correction
             target_angle = rotation_array[current_index]
-            error = normalize_angle_error(target_angle, gyro.yaw)
-
-            raw_angle = max(-60, min(60, -error))
+            error        = normalize_angle_error(target_angle, gyro.yaw)
+            raw_angle    = max(-60, min(60, -error))
 
             Movement.set_steering_angle(raw_angle)
-            Movement.motor_forward(65)
+            Movement.set_motor_forward(NORMAL_SPEED)
 
-            print(f"Target={target_angle}° | Rotation={gyro.yaw:.2f}° | Error={error:.2f}° | "
-                  f"RawAngle={raw_angle:.1f}° | RGB={rgb} | Lap={lap_count}")
+            print(f"Target={target_angle}° | Yaw={gyro.yaw:.2f}° | "
+                  f"Error={error:.2f}° | Angle={raw_angle:.1f}° | "
+                  f"RGB={rgb} | Lap={lap_count}")
 
             if orientation_colour == "orange" and is_orientation_color and last_color_detected != "orange":
-                current_index += 1
+                current_index      += 1
                 last_color_detected = "orange"
-                print(f"\nOrange detected, moving to next index {current_index}")
+                print(f"\nOrange detected — moving to index {current_index}")
             elif orientation_colour == "blue" and is_orientation_color and last_color_detected != "blue":
-                current_index += 1
+                current_index      += 1
                 last_color_detected = "blue"
-                print(f"\nBlue detected, moving to next index {current_index}")
+                print(f"\nBlue detected — moving to index {current_index}")
 
         if current_index >= len(rotation_array):
-            current_index = 0
-            lap_count += 1
+            current_index       = 0
+            lap_count          += 1
             last_color_detected = None
             print(f"\nLap {lap_count} complete")
 
         if lap_count >= max_laps:
             Movement.brake()
             Movement.stop_servo()
-            print("\nCourse complete. Car stopped.")
+            print("\nCourse complete.  Car stopped.")
             break
 
     time.sleep(0.01)
