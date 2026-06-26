@@ -1,12 +1,11 @@
-from smbus2 import SMBus
+import smbus2
 
-DEVICE_ADDR = 0x29  # replace with your address
+bus = smbus2.SMBus(0)   # or 0 depending on your board
+addr = 0x29
+COMMAND_BIT = 0x80
 
-bus = SMBus(0)  # bus number
 try:
-    bus.read_byte(DEVICE_ADDR)
-    print("Device acknowledged!")
+    chip_id = bus.read_byte_data(addr, COMMAND_BIT | 0x12)
+    print("Chip ID:", hex(chip_id))
 except OSError as e:
-    print("No ACK:", e)
-finally:
-    bus.close()
+    print("I2C error:", e)

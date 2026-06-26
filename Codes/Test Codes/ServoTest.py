@@ -1,56 +1,33 @@
-#!/usr/bin/env python3
 import Hobot.GPIO as GPIO
-import time, signal, sys
+import time
+import threading
 
-SERVO_PIN = 32   # adjust to your wiring
+ServoPin = 32
 
+GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BOARD)
-GPIO.setup(SERVO_PIN, GPIO.OUT)
+GPIO.setup(ServoPin, GPIO.OUT)
 
-running = True
-def signal_handler(sig, frame):
-    global running
-    running = False
-signal.signal(signal.SIGINT, signal_handler)
+# Simple bit-bang loop to hold servo at a fixed pulse width
+def servo_loop(pulse_ms):
+    while True:
+        high_time = pulse_ms / 1000.0
+        frame_time = 0.02  # 50 Hz → 20 ms frame
+        t0 = time.time()
+        GPIO.output(ServoPin, GPIO.HIGH)
+        time.sleep(high_time)
+        GPIO.output(ServoPin, GPIO.LOW)
+        elapsed = time.time() - t0
+        remainder = frame_time - elapsed
+        if remainder > 0:
+            time.sleep(remainder)
 
-def angle_to_pulse(angle):
-    """
-    Map 0–300° to 500–2500 µs pulse width.
-    """
-    return 500 + (angle / 300.0) * 2000  # µs
+# For your servo calibration, 150° midpoint corresponds to ~1.5 ms pulse
+midpoint_ms = 1.5
 
-def set_servo_angle(angle, duration=0.5):
-    pulse_us = angle_to_pulse(angle)
-    pulse_s = pulse_us / 1_000_000.0
-    cycles = int(duration / 0.02)
-    for i in range(cycles):
-        GPIO.output(SERVO_PIN, GPIO.HIGH)
-        time.sleep(pulse_s)
-        GPIO.output(SERVO_PIN, GPIO.LOW)
-        time.sleep(0.02 - pulse_s)
+print("Setting servo to 150° midpoint for mechanical adjustment...")
+threading.Thread(target=servo_loop, args=(midpoint_ms,), daemon=True).start()
 
-# Midpoint of 300° servo
-CENTER = 150
-LEFT   = CENTER - 45   # 105°
-RIGHT  = CENTER + 45   # 195°
-
-print("Sweeping ±45° around 150° center. CTRL+C to stop.")
-try:
-    while running:
-        print("Left")
-        set_servo_angle(LEFT, duration=1)
-        time.sleep(0.5)
-        
-        print("Center")
-        set_servo_angle(CENTER, duration=1)
-        time.sleep(0.5)
-        
-        print("Right")
-        set_servo_angle(RIGHT, duration=1)
-        time.sleep(0.5)
-
-        print("Center")
-        set_servo_angle(CENTER, duration=1)
-        time.sleep(0.5)
-finally:
-    GPIO.cleanup()
+# Keep running until you stop the script
+while True:
+    time.sleep(1)

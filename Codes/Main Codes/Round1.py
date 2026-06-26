@@ -27,9 +27,10 @@ GPIO.setup(ButtonPin, GPIO.IN)
 class Movement:
     current_angle         = 0
     offset                = 0      # trim ±2–3 if one direction turns tighter/wider than the other
-    neutral_ms            = 1.5   # new servo: centre = 150° = 1500 μs = 1.5 ms
-    # Initialise pulse_ms to neutral so the servo doesn't snap on thread start.
-    pulse_ms              = 1.5
+    neutral_ms            = 1.4
+    # Initialise pulse_ms to neutral, NOT 1.5 — prevents the servo from
+    # snapping right the moment the servo thread starts.
+    pulse_ms              = 1.4
 
     _servo_thread_running = False
     _motor_thread_running = False
@@ -40,71 +41,35 @@ class Movement:
     @staticmethod
     def set_steering_angle(wheel_angle, max_angle=40, full_range=False):
         """
-        Map a steering wheel_angle (±max_angle °) to a servo pulse width.
-
-        New servo spec (from sweep code):
-            Total range  : 0–300°
-            Pulse range  : 500–2500 μs  (0.5–2.5 ms)
-            Centre       : 150° = 1500 μs = 1.5 ms  (straight ahead)
-
-        Formula:
-            servo_deg = SERVO_CENTRE_DEG + wheel_angle
-            pulse_us  = SERVO_MIN_US + (servo_deg / SERVO_RANGE_DEG)
-                        * (SERVO_MAX_US - SERVO_MIN_US)
-
-        Examples at TURN_MAX_ANGLE = 75°:
-            wheel_angle  -75° → servo 75°  → 1000 μs = 1.0 ms  (full left)
-            wheel_angle    0° → servo 150° → 1500 μs = 1.5 ms  (centre)
-            wheel_angle  +75° → servo 225° → 2000 μs = 2.0 ms  (full right)
-
-        full_range is kept for API compatibility but has no effect —
-        the formula is the same at all ranges.
+        full_range=False  normal driving: centres on calibrated neutral_ms (1.4 ms).
+        full_range=True   turn mode:      centres at 1.5 ms so ±max_angle maps
+                          across the widest safe physical range (SERVO_TURN_MIN_MS
+                          to SERVO_TURN_MAX_MS).
         """
         corrected = wheel_angle + Movement.offset
         Movement.current_angle = max(-max_angle, min(max_angle, corrected))
 
-        servo_deg = SERVO_CENTRE_DEG + Movement.current_angle
-        pulse_us  = SERVO_MIN_US + (servo_deg / SERVO_RANGE_DEG) * (SERVO_MAX_US - SERVO_MIN_US)
-        Movement.pulse_ms = max(SERVO_PULSE_MIN_MS, min(SERVO_PULSE_MAX_MS, pulse_us / 1000.0))
+        if full_range:
+            Movement.pulse_ms = 1.5 + (Movement.current_angle / max_angle) * 0.5
+            Movement.pulse_ms = max(SERVO_TURN_MIN_MS, min(SERVO_TURN_MAX_MS, Movement.pulse_ms))
+        else:
+            Movement.pulse_ms = Movement.neutral_ms + (Movement.current_angle / max_angle) * 0.5
+            Movement.pulse_ms = max(1.0, min(2.0, Movement.pulse_ms))
 
     @staticmethod
     def _servo_loop():
-        """
-        Bit-bang a 50 Hz servo signal with accurate pulse timing.
-
-        Problem with plain time.sleep() on Linux:
-            The OS scheduler has a minimum granularity of ~1–10 ms, so
-            time.sleep(0.0014) can actually sleep 5–10 ms.  This makes
-            the servo pulse wildly inaccurate → servo doesn't respond.
-
-        Fix:
-            Use a busy-wait (spinning on time.monotonic()) for the HIGH
-            pulse (1.0–2.1 ms) where accuracy is critical.
-            Use time.sleep() for most of the LOW period (17–19 ms) where
-            a few ms of imprecision doesn't matter, then busy-wait the
-            last 1 ms to land on the frame boundary accurately.
-        """
-        FRAME = 0.02   # 50 Hz → 20 ms per frame
-
+        """Bit-bang a 50 Hz servo signal.  Runs in its own daemon thread."""
         while Movement._servo_thread_running:
-            pulse = Movement.pulse_ms / 1000.0   # ms → seconds
-            t0    = time.monotonic()
-
-            # ── HIGH pulse — busy-wait for microsecond accuracy ──────────
+            high_time  = Movement.pulse_ms / 1000.0
+            frame_time = 0.02          # 50 Hz → 20 ms frame
+            t0 = time.time()
             GPIO.output(ServoPin, GPIO.HIGH)
-            t_pulse_end = t0 + pulse
-            while time.monotonic() < t_pulse_end:
-                pass
+            time.sleep(high_time)
             GPIO.output(ServoPin, GPIO.LOW)
-
-            # ── LOW remainder — sleep bulk, busy-wait the last 1 ms ──────
-            t_frame_end  = t0 + FRAME
-            sleep_target = t_frame_end - 0.001   # leave 1 ms for busy-wait
-            remaining    = sleep_target - time.monotonic()
-            if remaining > 0:
-                time.sleep(remaining)
-            while time.monotonic() < t_frame_end:  # fine-tune to frame end
-                pass
+            elapsed = time.time() - t0
+            remainder = frame_time - elapsed
+            if remainder > 0:
+                time.sleep(remainder)
 
     @staticmethod
     def start_servo():
@@ -262,25 +227,19 @@ def normalize_angle_error(target, current):
 # ------------------------------------------------------------------
 # Tuning constants — only touch these to adjust behaviour
 # ------------------------------------------------------------------
-NORMAL_SPEED       = 40    # motor duty cycle during straight driving
-CORRECTION_SPEED   = 35    # motor duty cycle during heading correction
-TURN_SPEED         = 25    # motor duty cycle during the main turn phase
-PULSE_SPEED        = 30    # motor duty cycle during the pulse phase (end of turn)
-TURN_CRAWL_SPEED   = 10    # motor duty cycle during settle phase (barely rolling)
-TURN_MAX_ANGLE     = 75    # servo angle during turns, degrees (±75)
+NORMAL_SPEED       = 30    # motor duty cycle during straight driving
+CORRECTION_SPEED   = 25    # motor duty cycle during heading correction
+TURN_SPEED         = 30    # motor duty cycle during the main turn phase
+TURN_CRAWL_SPEED   = 30    # motor duty cycle during settle phase (barely rolling)
+TURN_MAX_ANGLE     = 65    # servo angle during turns, degrees (±75)
 TURN_SETTLE_FRAMES = 6     # frames the servo is held at full lock before
                            # accelerating — gives wheels time to reach endpoint
 
-# New servo physical spec — matches the sweep code
-# Change these if you swap servos again.
-SERVO_CENTRE_DEG  = 150      # servo angle for straight ahead (degrees)
-SERVO_RANGE_DEG   = 300      # total servo travel (degrees)
-SERVO_MIN_US      = 500      # pulse width at 0°  (μs)
-SERVO_MAX_US      = 2500     # pulse width at 300° (μs)
-# Safety clamp — pulse is kept inside these limits even if the maths goes out
-# of range.  Full spec is 0.5–2.5 ms; keeping a small margin protects the servo.
-SERVO_PULSE_MIN_MS = 0.5     # = 500 μs  (0° hard stop)
-SERVO_PULSE_MAX_MS = 2.5     # = 2500 μs (300° hard stop)
+# Extend servo range slightly beyond the standard 1.0–2.0 ms spec for
+# maximum physical deflection.  If the servo grunts or buzzes at the
+# extremes, change these back to 1.0 and 2.0.
+SERVO_TURN_MIN_MS  = 0.9
+SERVO_TURN_MAX_MS  = 2.1
 # ------------------------------------------------------------------
 
 # -----------------------------
@@ -309,49 +268,15 @@ correction_target       = 0
 correction_frames       = 0
 
 print("Waiting for button press to start...")
-print("(Touch the capacitive sensor to begin)")
+while GPIO.input(ButtonPin) == GPIO.LOW:
+    time.sleep(0.1)
 
-# Give the sensor time to stabilise on power-up before sampling it.
-time.sleep(0.5)
-
-# Auto-detect resting polarity: read the pin NOW (before any touch) and
-# treat the OPPOSITE level as "touched".  This works whether your sensor
-# outputs HIGH-at-rest or LOW-at-rest without any code changes.
-resting_state = GPIO.input(ButtonPin)
-active_state  = GPIO.LOW if resting_state == GPIO.HIGH else GPIO.HIGH
-print(f"Sensor resting: {'HIGH' if resting_state else 'LOW'} — "
-      f"will start on {'HIGH' if active_state else 'LOW'}")
-
-# Debounce: require 8 consecutive reads of the active state (~160 ms)
-# so electrical noise or a glitch can never trigger a false start.
-debounce_count = 0
-while debounce_count < 8:
-    if GPIO.input(ButtonPin) == active_state:
-        debounce_count += 1
-    else:
-        debounce_count = 0   # reset on any noise
-    time.sleep(0.02)
-
-print("Touch detected — starting up...")
+print("Button pressed — starting up...")
 
 # Centre the servo at neutral BEFORE starting its thread so the wheels
 # do not twitch to one side on power-up.
 Movement.set_steering_angle(0)
 Movement.start_servo()
-
-# Startup servo sweep — move left → centre → right → centre so you can
-# immediately see whether the servo is physically responding.
-# If the wheels don't move here, it's a wiring / power issue, not code.
-print("Servo test: sweeping left → centre → right → centre...")
-Movement.set_steering_angle(-30)
-time.sleep(0.6)
-Movement.set_steering_angle(0)
-time.sleep(0.4)
-Movement.set_steering_angle(30)
-time.sleep(0.6)
-Movement.set_steering_angle(0)
-time.sleep(0.4)
-print("Servo test complete — if wheels didn't move, check wiring/power.")
 
 # Start the motor bit-bang thread (motor is idle until set_motor_forward is called)
 Movement.start_motor()
@@ -372,12 +297,12 @@ while True:
 
     # ── Orientation detection (runs once) ────────────────────────────────────
     if orientation_colour is None:
-        if (155 <= r <= 185) and (85 <= g <= 125) and (50 <= b <= 90):
-            rotation_array    = [0, -105, 15, 75]   # anticlockwise
+        if (110 <= r <= 125) and (85 <= g <= 112) and (52 <= b <= 79):
+            rotation_array    = [0, -100, 170, 80]   # anticlockwise
             orientation_colour = "orange"
             print("\nCounterclockwise rotation sequence selected")
-        elif (85 <= r <= 110) and (90 <= g <= 115) and (85 <= b <= 120):
-            rotation_array    = [0, 105, -15, -75]  # clockwise
+        elif (75 <= r <= 101) and (75 <= g <= 104) and (76 <= b <= 107):
+            rotation_array    = [0, 100, -170, -80]  # clockwise
             orientation_colour = "blue"
             print("\nClockwise rotation sequence selected")
 
@@ -386,15 +311,21 @@ while True:
     is_opposite_color    = False
 
     if orientation_colour == "orange":
-        if (155 <= r <= 185) and (85 <= g <= 125) and (50 <= b <= 90):
+        if (110 <= r <= 125) and (85 <= g <= 112) and (52 <= b <= 79):
             is_orientation_color = True
-        elif (85 <= r <= 110) and (90 <= g <= 115) and (85 <= b <= 120):
+        elif (75 <= r <= 101) and (75 <= g <= 104) and (76 <= b <= 107):
             is_opposite_color = True
     elif orientation_colour == "blue":
-        if (85 <= r <= 110) and (90 <= g <= 115) and (85 <= b <= 120):
+        if (75 <= r <= 101) and (75 <= g <= 104) and (76 <= b <= 107):
             is_orientation_color = True
-        elif (155 <= r <= 185) and (85 <= g <= 125) and (50 <= b <= 90):
+        elif (110 <= r <= 125) and (85 <= g <= 112) and (52 <= b <= 79):
             is_opposite_color = True
+
+    # ── Reset colour tracking on non-colour frames ───────────────────────────
+    # Prevents a single noisy reading on white from permanently locking
+    # last_color_detected and blocking all future colour triggers.
+    if not is_orientation_color and not is_opposite_color:
+        last_color_detected = None
 
     # ── Manual turn mode ─────────────────────────────────────────────────────
     if manual_turn_mode:
@@ -406,23 +337,26 @@ while True:
 
         error = normalize_angle_error(manual_turn_target, gyro.yaw)
 
-        # Derive servo angle from the direction locked at turn entry.
-        # Never recompute from live error — error can briefly flip sign
-        # mid-corner (gyro noise / slight overshoot) and would cause a
-        # momentary pulse in the wrong direction.
+        # Lock servo to full deflection on every turn frame.
+        # Set this BEFORE the speed decision so the servo starts
+        # moving toward the endpoint as early as possible.
+        raw_angle = -TURN_MAX_ANGLE if error > 0 else TURN_MAX_ANGLE
+
+        # Direction lock: keep the servo within the half-range that matches
+        # the direction captured at turn entry.  Prevents the servo crossing
+        # centre if the gyro error briefly flips sign mid-corner.
+        #   "left"  → allowed range [-TURN_MAX_ANGLE,  0]
+        #   "right" → allowed range [0,  TURN_MAX_ANGLE]
         if manual_turn_direction == "left":
-            raw_angle = -TURN_MAX_ANGLE
-        elif manual_turn_direction == "right":
-            raw_angle = TURN_MAX_ANGLE
+            raw_angle = max(-TURN_MAX_ANGLE, min(0, raw_angle))
         else:
-            # Fallback only — should never reach here
-            raw_angle = -TURN_MAX_ANGLE if error > 0 else TURN_MAX_ANGLE
+            raw_angle = max(0, min(TURN_MAX_ANGLE, raw_angle))
         Movement.set_steering_angle(raw_angle, max_angle=TURN_MAX_ANGLE, full_range=True)
 
         if manual_turn_pulse_mode:
             # ── Pulse phase: full lock, drive, exit after 8 frames ──────────
             manual_turn_pulse_frames += 1
-            Movement.set_motor_forward(PULSE_SPEED)
+            Movement.set_motor_forward(TURN_SPEED)
 
             if manual_turn_pulse_frames >= 8:
                 manual_turn_mode        = False
@@ -459,14 +393,20 @@ while True:
             manual_turn_pulse_frames = 0
             correction_mode          = False
             manual_turn_start_angle  = gyro.yaw
-            if rotation_array[current_index] >= 0:
+            # Overshoot 50° in the direction of the next heading in the sequence.
+            if current_index + 1 < len(rotation_array):
+                _next_hdg = rotation_array[current_index + 1]
+            else:
+                _next_hdg = rotation_array[0]
+            if _next_hdg >= rotation_array[current_index]:
                 manual_turn_target = rotation_array[current_index] + 50
             else:
                 manual_turn_target = rotation_array[current_index] - 50
 
             last_color_detected = "orientation"
             print(f"\nOrientation colour during correction — entering manual turn.  "
-                  f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}°")
+                  f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}° "
+                  f"(next heading = {_next_hdg}°)")
             # Lock the direction now so it can't flip mid-turn
             _init_err = normalize_angle_error(manual_turn_target, gyro.yaw)
             manual_turn_direction = "left" if _init_err > 0 else "right"
@@ -492,14 +432,21 @@ while True:
             manual_turn_pulse_mode   = False
             manual_turn_pulse_frames = 0
             manual_turn_start_angle  = gyro.yaw
-            if rotation_array[current_index] >= 0:
+            # Overshoot 50° in the direction of the next heading in the sequence,
+            # so the car turns toward the next gate, not always the same direction.
+            if current_index + 1 < len(rotation_array):
+                _next_hdg = rotation_array[current_index + 1]
+            else:
+                _next_hdg = rotation_array[0]
+            if _next_hdg >= rotation_array[current_index]:
                 manual_turn_target = rotation_array[current_index] + 50
             else:
                 manual_turn_target = rotation_array[current_index] - 50
 
             last_color_detected = "orientation"
             print(f"\nOrientation colour detected — starting manual 50° turn.  "
-                  f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}°")
+                  f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}° "
+                  f"(next heading = {_next_hdg}°)")
             # Lock the direction now so it can't flip mid-turn
             _init_err = normalize_angle_error(manual_turn_target, gyro.yaw)
             manual_turn_direction = "left" if _init_err > 0 else "right"
@@ -517,17 +464,11 @@ while True:
                   f"Error={error:.2f}° | Angle={raw_angle:.1f}° | "
                   f"RGB={rgb} | Lap={lap_count}")
 
-            # Explicit turn-mode guard: index must not advance while a turn
-            # is in progress.  Already structurally protected by the
-            # if/elif/else above, but stated explicitly to prevent any
-            # future refactor from accidentally breaking the lock.
-            if orientation_colour == "orange" and is_orientation_color \
-                    and last_color_detected != "orange" and not manual_turn_mode:
+            if orientation_colour == "orange" and is_orientation_color and last_color_detected != "orange":
                 current_index      += 1
                 last_color_detected = "orange"
                 print(f"\nOrange detected — moving to index {current_index}")
-            elif orientation_colour == "blue" and is_orientation_color \
-                    and last_color_detected != "blue" and not manual_turn_mode:
+            elif orientation_colour == "blue" and is_orientation_color and last_color_detected != "blue":
                 current_index      += 1
                 last_color_detected = "blue"
                 print(f"\nBlue detected — moving to index {current_index}")
