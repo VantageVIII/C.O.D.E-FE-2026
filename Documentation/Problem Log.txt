@@ -1,0 +1,65 @@
+Problem 1:
+
+Robot enters manual turn mode consistently, but does not always exit it even when driving over the exit line.
+When the robot does exit the turn mode it gets stuck (It's not getting enough power to the rear wheels to overcome the force of the front wheels being turned)
+
+Testing conditions:
+
+Indoors environment with natural light; well lit.
+Robot is running in the anticlockwise direction.
+
+Possible Solutions:
+
+When the robot is stuck after exiting turn mode (don't check if it is stuck) give it a brief pulse of 60% power to give it momentum
+
+
+
+Problem 2:
+
+After completing turn 1 when the robot needs to go into manual turn mode for turn 2 it goes a bit too fast
+Pulse time for manual turn exit needs to be longer
+
+Testing conditions:
+
+Same conditions as Prior
+
+Possible Solutions:
+
+- When in normal driving mode after exiting manual turn mode add a 0.2 second coast frame every second to make sure it does not drive too fast
+- on manual turn exit pulse change power to 70% and double pulse time
+
+
+
+Problem 3:
+
+Robot is not reading line for manual turn mode on turn 2. Speed has been reduced by adding in coast period to help the colour sensor
+
+Test conditions:
+
+Indoors environment with natural light; well lit.
+Robot is running in the anticlockwise direction.
+
+Possible Solutions:
+
+Tighten line frame detection making the robot need less frames to dictate the colour
+
+
+
+Problem 4:
+
+When starting Lap 2 the Robot skips array index 1 and goes directly to index 2
+
+Test conditions:
+
+Indoors environment with natural light; well lit.
+Robot is running in the anticlockwise direction.
+
+Problem 5:
+
+With the new colour frame logic, the array index gets updated too frequently
+
+Test conditions:
+
+Indoors environment with natural light; well lit.
+Robot is running in the anticlockwise direction.
+
