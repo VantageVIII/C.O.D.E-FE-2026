@@ -225,15 +225,42 @@ def normalize_angle_error(target, current):
     return error
 
 # ------------------------------------------------------------------
+# Colour detection helpers — keeps all conditions in one place
+# ------------------------------------------------------------------
+def is_blue_line(r, g, b):
+    """Blue line: tightened ranges + brightness filter + hue dominance."""
+    return (
+        (75 <= r <= 90) and
+        (94 <= g <= 107) and
+        (79 <= b <= 107) and
+        (r + g + b < 300) and
+        (b > r)
+    )
+
+def is_orange_line(r, g, b):
+    """Orange line: range check + red-dominance conditions."""
+    return (
+        (110 <= r <= 125) and
+        (85 <= g <= 112) and
+        (52 <= b <= 79) and
+        (r > g) and
+        (r > b)
+    )
+
+# ------------------------------------------------------------------
 # Tuning constants — only touch these to adjust behaviour
 # ------------------------------------------------------------------
-NORMAL_SPEED       = 30    # motor duty cycle during straight driving
-CORRECTION_SPEED   = 25    # motor duty cycle during heading correction
+NORMAL_SPEED       = 20    # motor duty cycle during straight driving
+CORRECTION_SPEED   = 20    # motor duty cycle during heading correction
 TURN_SPEED         = 30    # motor duty cycle during the main turn phase
 TURN_CRAWL_SPEED   = 30    # motor duty cycle during settle phase (barely rolling)
 TURN_MAX_ANGLE     = 65    # servo angle during turns, degrees (±75)
 TURN_SETTLE_FRAMES = 6     # frames the servo is held at full lock before
                            # accelerating — gives wheels time to reach endpoint
+EXIT_BURST_POWER   = 60    # brief high-power pulse after exiting turn mode
+EXIT_BURST_FRAMES  = 10    # number of frames the burst lasts (doubled for longer momentum)
+COAST_INTERVAL_FRAMES = 100  # frames between coast events (~1 s at ~10 ms/loop)
+COAST_DURATION_FRAMES  = 30  # frames the motor coasts to slow down (~0.2 s)
 
 # Extend servo range slightly beyond the standard 1.0–2.0 ms spec for
 # maximum physical deflection.  If the servo grunts or buzzes at the
@@ -266,6 +293,9 @@ color_read_threshold    = 10
 correction_mode         = False
 correction_target       = 0
 correction_frames       = 0
+exit_burst_frames       = 0
+coast_frames            = 0      # >0 means the motor is coasting this frame
+frame_since_last_coast  = 0      # counts frames since the last coast event
 
 print("Waiting for button press to start...")
 while GPIO.input(ButtonPin) == GPIO.LOW:
@@ -297,12 +327,12 @@ while True:
 
     # ── Orientation detection (runs once) ────────────────────────────────────
     if orientation_colour is None:
-        if (110 <= r <= 125) and (85 <= g <= 112) and (52 <= b <= 79):
-            rotation_array    = [0, -100, 170, 80]   # anticlockwise
+        if is_orange_line(r, g, b):
+            rotation_array    = [0, -90, 170, 80]   #clockwise
             orientation_colour = "orange"
             print("\nCounterclockwise rotation sequence selected")
-        elif (75 <= r <= 101) and (75 <= g <= 104) and (76 <= b <= 107):
-            rotation_array    = [0, 100, -170, -80]  # clockwise
+        elif is_blue_line(r, g, b):
+            rotation_array    = [0, 90, -170, -80]  # anticlockwise
             orientation_colour = "blue"
             print("\nClockwise rotation sequence selected")
 
@@ -311,14 +341,14 @@ while True:
     is_opposite_color    = False
 
     if orientation_colour == "orange":
-        if (110 <= r <= 125) and (85 <= g <= 112) and (52 <= b <= 79):
+        if is_orange_line(r, g, b):
             is_orientation_color = True
-        elif (75 <= r <= 101) and (75 <= g <= 104) and (76 <= b <= 107):
+        elif is_blue_line(r, g, b):
             is_opposite_color = True
     elif orientation_colour == "blue":
-        if (75 <= r <= 101) and (75 <= g <= 104) and (76 <= b <= 107):
+        if is_blue_line(r, g, b):
             is_orientation_color = True
-        elif (110 <= r <= 125) and (85 <= g <= 112) and (52 <= b <= 79):
+        elif is_orange_line(r, g, b):
             is_opposite_color = True
 
     # ── Reset colour tracking on non-colour frames ───────────────────────────
@@ -362,9 +392,11 @@ while True:
                 manual_turn_mode        = False
                 manual_turn_pulse_mode  = False
                 manual_turn_frames      = 0
+                exit_burst_frames       = EXIT_BURST_FRAMES
                 current_index          += 1
                 print(f"\nPulse complete — advancing to index {current_index}.  "
-                      f"Current angle: {gyro.yaw:.2f}°")
+                      f"Current angle: {gyro.yaw:.2f}°  "
+                      f"Burst: {exit_burst_frames} frames at {EXIT_BURST_POWER}%")
         else:
             manual_turn_frames += 1
 
@@ -458,11 +490,42 @@ while True:
             raw_angle    = max(-60, min(60, -error))
 
             Movement.set_steering_angle(raw_angle)
-            Movement.set_motor_forward(NORMAL_SPEED)
 
-            print(f"Target={target_angle}° | Yaw={gyro.yaw:.2f}° | "
-                  f"Error={error:.2f}° | Angle={raw_angle:.1f}° | "
-                  f"RGB={rgb} | Lap={lap_count}")
+            # ── Exit burst: brief high-power pulse after a turn ──────────────
+            # Gives the car momentum to overcome steering resistance when the
+            # front wheels are still at an angle from the corner exit.
+            if exit_burst_frames > 0:
+                Movement.set_motor_forward(EXIT_BURST_POWER)
+                exit_burst_frames -= 1
+                print(f"EXIT BURST  frame={EXIT_BURST_FRAMES - exit_burst_frames}/{EXIT_BURST_FRAMES} | "
+                      f"Power={EXIT_BURST_POWER}% | "
+                      f"Target={target_angle}° | Yaw={gyro.yaw:.2f}°")
+            else:
+                # ── Periodic coast: every ~1 s, coast for 0.2 s to shed speed ──
+                # Prevents the robot from entering turn 2 too fast after the
+                # exit burst from turn 1.
+                if coast_frames > 0:
+                    # Currently coasting — freewheel (power = 0) for the
+                    # remainder of the coast duration.
+                    Movement.set_motor_forward(0)
+                    coast_frames -= 1
+                    print(f"COAST  remaining={coast_frames}/{COAST_DURATION_FRAMES} | "
+                          f"Target={target_angle}° | Yaw={gyro.yaw:.2f}°")
+                else:
+                    frame_since_last_coast += 1
+                    if frame_since_last_coast >= COAST_INTERVAL_FRAMES:
+                        # Time for a coast event
+                        coast_frames           = COAST_DURATION_FRAMES
+                        frame_since_last_coast = 0
+                        Movement.set_motor_forward(0)
+                        coast_frames -= 1
+                        print(f"COAST START  duration={COAST_DURATION_FRAMES} frames | "
+                              f"Target={target_angle}° | Yaw={gyro.yaw:.2f}°")
+                    else:
+                        Movement.set_motor_forward(NORMAL_SPEED)
+                        print(f"Target={target_angle}° | Yaw={gyro.yaw:.2f}° | "
+                              f"Error={error:.2f}° | Angle={raw_angle:.1f}° | "
+                              f"RGB={rgb} | Lap={lap_count}")
 
             if orientation_colour == "orange" and is_orientation_color and last_color_detected != "orange":
                 current_index      += 1
