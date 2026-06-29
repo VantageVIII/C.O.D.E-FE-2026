@@ -236,17 +236,17 @@ def is_orange_line(r, g, b):
 # ------------------------------------------------------------------
 # Tuning constants — only touch these to adjust behaviour
 # ------------------------------------------------------------------
-NORMAL_SPEED       = 30    # motor duty cycle during straight driving
-CORRECTION_SPEED   = 25    # motor duty cycle during heading correction
+NORMAL_SPEED       = 20    # motor duty cycle during straight driving
+CORRECTION_SPEED   = 20    # motor duty cycle during heading correction
 TURN_SPEED         = 30    # motor duty cycle during the main turn phase
 TURN_CRAWL_SPEED   = 30    # motor duty cycle during settle phase (barely rolling)
 TURN_MAX_ANGLE     = 65    # servo angle during turns, degrees (±75)
 TURN_SETTLE_FRAMES = 6     # frames the servo is held at full lock before
                            # accelerating — gives wheels time to reach endpoint
-EXIT_BURST_POWER   = 70    # brief high-power pulse after exiting turn mode
+EXIT_BURST_POWER   = 60    # brief high-power pulse after exiting turn mode
 EXIT_BURST_FRAMES  = 10    # number of frames the burst lasts (doubled for longer momentum)
 COAST_INTERVAL_FRAMES = 100  # frames between coast events (~1 s at ~10 ms/loop)
-COAST_DURATION_FRAMES  = 20  # frames the motor coasts to slow down (~0.2 s)
+COAST_DURATION_FRAMES  = 30  # frames the motor coasts to slow down
 
 # Extend servo range slightly beyond the standard 1.0–2.0 ms spec for
 # maximum physical deflection.  If the servo grunts or buzzes at the
@@ -284,6 +284,7 @@ correction_frames       = 0
 exit_burst_frames       = 0
 coast_frames            = 0      # >0 means the motor is coasting this frame
 frame_since_last_coast  = 0      # counts frames since the last coast event
+line_cooldown           = False  # blocks repeat index increments while still on a line
 
 print("Waiting for button press to start...")
 while GPIO.input(ButtonPin) == GPIO.LOW:
@@ -330,6 +331,12 @@ while True:
 
     orange_confirmed = orange_frames >= color_read_threshold
     blue_confirmed   = blue_frames   >= color_read_threshold
+
+    # ── Line cooldown reset ──────────────────────────────────────────────────
+    # Once the robot is off the line (no colour confirmed), clear the cooldown
+    # so the next line crossing is allowed to increment the index again.
+    if not orange_confirmed and not blue_confirmed:
+        line_cooldown = False
 
     # ── Orientation detection (runs once) ────────────────────────────────────
     if orientation_colour is None:
@@ -534,13 +541,17 @@ while True:
                               f"RGB={rgb} | Lap={lap_count}")
 
             if orientation_colour == "orange" and is_orientation_color and last_color_detected != "orange":
-                current_index      += 1
-                last_color_detected = "orange"
-                print(f"\nOrange detected — moving to index {current_index}")
+                if not line_cooldown:
+                    current_index  += 1
+                    line_cooldown   = True
+                    last_color_detected = "orange"
+                    print(f"\nOrange detected — moving to index {current_index}")
             elif orientation_colour == "blue" and is_orientation_color and last_color_detected != "blue":
-                current_index      += 1
-                last_color_detected = "blue"
-                print(f"\nBlue detected — moving to index {current_index}")
+                if not line_cooldown:
+                    current_index  += 1
+                    line_cooldown   = True
+                    last_color_detected = "blue"
+                    print(f"\nBlue detected — moving to index {current_index}")
 
         if current_index >= len(rotation_array):
             current_index       = 0
