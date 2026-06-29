@@ -228,24 +228,10 @@ def normalize_angle_error(target, current):
 # Colour detection helpers — keeps all conditions in one place
 # ------------------------------------------------------------------
 def is_blue_line(r, g, b):
-    """Blue line: tightened ranges + brightness filter + hue dominance."""
-    return (
-        (75 <= r <= 90) and
-        (94 <= g <= 107) and
-        (79 <= b <= 107) and
-        (r + g + b < 300) and
-        (b > r)
-    )
+    return (100 <= r <= 148) and (103 <= g <= 154) and (71 <= b <= 116)
 
 def is_orange_line(r, g, b):
-    """Orange line: range check + red-dominance conditions."""
-    return (
-        (110 <= r <= 125) and
-        (85 <= g <= 112) and
-        (52 <= b <= 79) and
-        (r > g) and
-        (r > b)
-    )
+    return (108 <= r <= 139) and (99 <= g <= 138) and (63 <= b <= 103)
 
 # ------------------------------------------------------------------
 # Tuning constants — only touch these to adjust behaviour
