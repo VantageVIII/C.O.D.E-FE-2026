@@ -63,3 +63,48 @@ Test conditions:
 Indoors environment with natural light; well lit.
 Robot is running in the anticlockwise direction.
 
+
+
+
+Problem 6:
+
+Manual turn mode only engages on the first turn, not all of the turns
+
+Test conditions:
+
+Indoors environment with natural light; well lit.
+Robot is running in the anticlockwise direction.
+
+Possible Solutions:
+
+Update manual turn mode logic to trigger on all turns
+
+
+
+Problem 7:
+
+When starting lap 2 error type: Invalid array index occurs
+
+Test conditions:
+
+Indoors environment with natural light; well lit.
+Robot is running in the anticlockwise direction.
+
+
+
+Problem 8:
+
+Sometimes the robot drives over the turn indicator lines, but does not read them/react
+- Detection frame requirement too long
+- Sensor gets varying readings in different light conditions
+
+Test conditions:
+
+Indoors environment with natural light; well lit.
+Robot is running in the anticlockwise direction.
+
+
+Possible Solutions:
+
+- Find a way to get consistent reading regardless of light condition
+- Run the colour sensor at a higher polling rate or reduce detection frame requirement
