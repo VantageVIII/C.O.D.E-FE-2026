@@ -315,11 +315,23 @@ post_sequence_mode      = False
 
 
 def advance_rotation_index():
-    global current_index, lap_count, last_color_detected
+    global current_index, lap_count, last_color_detected, rotation_array
     current_index += 1
     if current_index >= len(rotation_array):
         current_index = 0
         lap_count += 1
+
+        # Apply drift correction after each lap completion
+        if lap_count >= 1:
+            if orientation_colour == "orange":   # clockwise sequence
+                for i in range(len(rotation_array)):
+                    rotation_array[i] -= 5
+            elif orientation_colour == "blue":   # anticlockwise sequence
+                for i in range(len(rotation_array)):
+                    rotation_array[i] += 5
+            print(f"Lap {lap_count} complete — applied ±10° correction for {orientation_colour} orientation. "
+                  f"New rotation_array = {rotation_array}")
+
         last_color_detected = None
         print(f"\nLap {lap_count} complete")
 
@@ -359,11 +371,11 @@ while True:
     # ── Orientation detection (runs once) ────────────────────────────────────
     if orientation_colour is None:
         if is_orange_line(orange_check_r, orange_check_g, orange_check_b):
-            rotation_array    = [0, -90, 179, 90]   #clockwise
+            rotation_array    = [0, -80, -170, 80]   #clockwise
             orientation_colour = "orange"
             print("\nCounterclockwise rotation sequence selected")
         elif is_blue_line(blue_check_r, blue_check_g, blue_check_b):
-            rotation_array    = [0, 90, -179, -90]  # anticlockwise
+            rotation_array    = [0, 80, 170, -80]  # anticlockwise
             orientation_colour = "blue"
             print("\nClockwise rotation sequence selected")
 
