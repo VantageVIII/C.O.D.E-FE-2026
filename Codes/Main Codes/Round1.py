@@ -312,6 +312,9 @@ correction_target       = 0
 correction_frames       = 0
 exit_burst_frames       = 0
 post_sequence_mode      = False
+orange_frames           = 0
+blue_frames             = 0
+line_cooldown           = False
 
 
 def advance_rotation_index():
