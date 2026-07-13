@@ -315,6 +315,7 @@ post_sequence_mode      = False
 orange_frames           = 0
 blue_frames             = 0
 line_cooldown           = False
+forward_start_time      = None
 
 
 def advance_rotation_index():
@@ -520,12 +521,34 @@ while True:
         if orientation_colour == "orange" and is_orange_line(orange_check_r, orange_check_g, orange_check_b):
             Movement.brake()
             Movement.stop_servo()
+            forward_duration = time.time() - forward_start_time
+            reverse_duration = forward_duration / 2.0
+            Movement.set_motor_forward(0)
+            end_time = time.time() + reverse_duration
+            while time.time() < end_time:
+                GPIO.output(IN1, GPIO.HIGH)
+                GPIO.output(IN2, GPIO.LOW)
+                Movement._motor_power = NORMAL_SPEED
+                time.sleep(0.01)
+
+            Movement.brake()
             post_sequence_mode = False
             print("\nFinal orange line detected — stop at heading 0°.")
             break
         elif orientation_colour == "blue" and is_blue_line(blue_check_r, blue_check_g, blue_check_b):
             Movement.brake()
             Movement.stop_servo()
+            forward_duration = time.time() - forward_start_time
+            reverse_duration = forward_duration / 2.0
+            Movement.set_motor_forward(0)
+            end_time = time.time() + reverse_duration
+            while time.time() < end_time:
+                GPIO.output(IN1, GPIO.HIGH)
+                GPIO.output(IN2, GPIO.LOW)
+                Movement._motor_power = NORMAL_SPEED
+                time.sleep(0.01)
+
+            Movement.brake()
             post_sequence_mode = False
             print("\nFinal blue line detected — stop at heading 0°.")
             break
@@ -629,6 +652,7 @@ while True:
                     # print(f"DBG raw={raw_r,raw_g,raw_b} ema={r,g,b} br={r+g+b} ratios={(r/(r+g+b), g/(r+g+b), b/(r+g+b))} blue_frames={blue_frames} idx={current_index}")
 
         if lap_count >= max_laps:
+            forward_start_time = time.time()
             post_sequence_mode = True
             print("\nSequence complete. Entering post-sequence forward mode...")
 
