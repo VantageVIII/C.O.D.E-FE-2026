@@ -217,6 +217,113 @@ def normalize_angle_error(target, current):
 
 
 # -----------------------------
+# Grid positions (2x6 layout) and filtering
+# -----------------------------
+hl = None
+
+PosID_1 = "Empty"
+PosID_2 = "Empty"
+PosID_3 = "Empty"
+PosID_4 = "Empty"
+PosID_5 = "Empty"
+PosID_6 = "Empty"
+
+
+def apply_filters():
+    """
+    Enforce anticlockwise layout rules:
+    - If PosID_2 or PosID_5 occupied -> all others cleared.
+    - PosID_1 and PosID_6 are mutually exclusive; if one occupied, clear the other and clear 2 & 5.
+    - PosID_3 and PosID_4 are mutually exclusive; if one occupied, clear the other and clear 2 & 5.
+    - Maximum of 2 non-empty pillars; if more, keep the first two detected and clear the rest.
+    """
+    global PosID_1, PosID_2, PosID_3, PosID_4, PosID_5, PosID_6
+
+    # Rule A: if center-top (2) or center-bottom (5) present, clear all others
+    if PosID_2 != "Empty":
+        PosID_1 = PosID_3 = PosID_4 = PosID_6 = "Empty"
+    if PosID_5 != "Empty":
+        PosID_1 = PosID_3 = PosID_4 = PosID_6 = "Empty"
+
+    # Rule B: 1 vs 6 mutual exclusion; if one present clear the other and clear 2 & 5
+    if PosID_1 != "Empty":
+        PosID_6 = "Empty"
+        PosID_2 = PosID_5 = "Empty"
+    if PosID_6 != "Empty":
+        PosID_1 = "Empty"
+        PosID_2 = PosID_5 = "Empty"
+
+    # Rule C: 3 vs 4 mutual exclusion; if one present clear the other and clear 2 & 5
+    if PosID_3 != "Empty":
+        PosID_4 = "Empty"
+        PosID_2 = PosID_5 = "Empty"
+    if PosID_4 != "Empty":
+        PosID_3 = "Empty"
+        PosID_2 = PosID_5 = "Empty"
+
+    # Rule D: enforce max 2 pillars (keep first two non-empty in left-to-right order 1..6)
+    positions = [PosID_1, PosID_2, PosID_3, PosID_4, PosID_5, PosID_6]
+    non_empty_count = sum(1 for p in positions if p != "Empty")
+    if non_empty_count > 2:
+        kept = 0
+        for i in range(6):
+            if positions[i] != "Empty":
+                kept += 1
+                if kept > 2:
+                    positions[i] = "Empty"
+        PosID_1, PosID_2, PosID_3, PosID_4, PosID_5, PosID_6 = positions
+
+
+def update_grid_from_huskylens(hl, id_to_color=None):
+    """
+    Read hl.requestAll(), map HuskyLens detection IDs to PosID_1..PosID_6,
+    set each PosID to "Red", "Green", or "Empty", then apply filters.
+    - hl: HuskyLensLibrary instance already initialized in the framework.
+    - id_to_color: optional dict mapping learned object IDs to "Red"/"Green".
+      If None, default mapping assumes learned ID 1 -> "Green", ID 2 -> "Red".
+    After calling this function the global PosID_1..PosID_6 variables are updated.
+    """
+    global PosID_1, PosID_2, PosID_3, PosID_4, PosID_5, PosID_6
+
+    # default color mapping if not provided
+    if id_to_color is None:
+        id_to_color = {1: "Green", 2: "Red"}
+
+    # reset grid each frame
+    PosID_1 = PosID_2 = PosID_3 = PosID_4 = PosID_5 = PosID_6 = "Empty"
+
+    if hl is None or not hasattr(hl, "requestAll"):
+        apply_filters()
+        print(f"Grid after filter: 1={PosID_1}, 2={PosID_2}, 3={PosID_3}, 4={PosID_4}, 5={PosID_5}, 6={PosID_6}")
+        return
+
+    results = hl.requestAll()
+    if results:
+        for r in results:
+            if not hasattr(r, "ID"):
+                continue
+            color = id_to_color.get(r.ID, "Empty")
+            # Map HuskyLens learned ID to grid position by numeric ID 1..6
+            if r.ID == 1:
+                PosID_1 = color
+            elif r.ID == 2:
+                PosID_2 = color
+            elif r.ID == 3:
+                PosID_3 = color
+            elif r.ID == 4:
+                PosID_4 = color
+            elif r.ID == 5:
+                PosID_5 = color
+            elif r.ID == 6:
+                PosID_6 = color
+
+    apply_filters()
+
+    # optional debug print (leave or remove as desired)
+    print(f"Grid after filter: 1={PosID_1}, 2={PosID_2}, 3={PosID_3}, 4={PosID_4}, 5={PosID_5}, 6={PosID_6}")
+
+
+# -----------------------------
 # Route array system
 # -----------------------------
 ROUTE_SLOTS = [0, 0, 0, 0]
@@ -373,6 +480,9 @@ try:
         rgb = color.get_rgb()
         raw_r, raw_g, raw_b = rgb
         r, g, b = ema_update(raw_r, raw_g, raw_b)
+
+        # Update grid positions and apply filtering before route logic
+        update_grid_from_huskylens(hl, id_to_color={1: "Green", 2: "Red"})
 
         # Keep the base orientation detection logic intact.
         if orientation_colour is None:
