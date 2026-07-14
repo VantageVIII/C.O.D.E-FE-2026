@@ -4,6 +4,7 @@ import serial
 import struct
 import smbus2
 import threading
+from huskylib import HuskyLensLibrary
 
 # -----------------------------
 # GPIO Setup
@@ -21,9 +22,43 @@ GPIO.setup([IN1, IN2, LEDPin, ENA, ServoPin], GPIO.OUT)
 GPIO.output(LEDPin, GPIO.HIGH)
 GPIO.setup(ButtonPin, GPIO.IN)
 
+# -----------------------------
+# Route array system
+# -----------------------------
+ROUTE_SLOTS = [0, 0, 0, 0]
+ROUTE_WRITE_INDEX = 1
+TURN_COUNT = 0
+RECORDING_ROUTES = True
+REPLAY_INDEX = 0
+REPLAY_LAPS = 0
+MAX_REPLAY_LAPS = 2  # total laps = 3 (1st lap recording + 2 replay laps)
+REPLAY_ACTIVE = False
+REPLAY_NEXT_TIME = 0.0
+REPLAY_PAUSE_SECONDS = 0.35
 
+CLOCKWISE_ROUTE_GROUPS = {
+    "A": {1, 3, 5, 9, 13, 19, 25, 31},
+    "B": {2, 4, 6, 8, 10, 18, 24, 30, 36},
+    "C": {14, 20, 26, 32},
+    "D": {15, 27, 33},
+}
+
+ANTICLOCKWISE_ROUTE_GROUPS = {
+    "A": {1, 3, 5, 9, 13, 19, 25, 31},
+    "B": {2, 4, 6, 8, 10, 18, 24, 30, 36},
+    "C": {14, 20, 26, 32},
+    "D": {15, 27, 33},
+}
+
+ROUTE_GROUP_TO_ID = {"A": 1, "B": 2, "C": 3, "D": 4}
+
+# -----------------------------
+# Movement Class
+# -----------------------------
 class Movement:
-    """Bit-banging servo and motor control without PWM helpers."""
+    # -----------------------------
+    # Bit-Bashing Helpers
+    # -----------------------------
 
     current_angle = 0
     offset = 0
@@ -119,7 +154,9 @@ class Movement:
         GPIO.output(IN2, GPIO.HIGH)
         GPIO.output(ENA, GPIO.LOW)
 
-
+# -----------------------------
+# Gyro Sensor Class
+# -----------------------------
 class GyroSensor:
     def __init__(self):
         self.ser = serial.Serial('/dev/ttyS7', baudrate=9600, timeout=0.01)
@@ -145,7 +182,9 @@ class GyroSensor:
                 elif self.yaw < -180:
                     self.yaw += 360
 
-
+# -----------------------------
+# Color Sensor Class
+# -----------------------------
 class ColorSensor:
     def __init__(self, i2c_bus=0, addr=0x29):
         self.bus = smbus2.SMBus(i2c_bus)
@@ -179,7 +218,6 @@ class ColorSensor:
         b_std = int((b / c) * 255)
         return (r_std, g_std, b_std)
 
-
 # -----------------------------
 # Orientation helpers
 # -----------------------------
@@ -192,7 +230,6 @@ def is_blue_line(r, g, b):
         (b > r)
     )
 
-
 def is_orange_line(r, g, b):
     return (
         (150 <= r <= 255) and
@@ -202,10 +239,8 @@ def is_orange_line(r, g, b):
         (r > b)
     )
 
-
 def within_tolerance(value, target, tol=0.05):
     return abs(value - target) <= target * tol
-
 
 def normalize_angle_error(target, current):
     error = target - current
@@ -215,144 +250,36 @@ def normalize_angle_error(target, current):
         error += 360
     return error
 
+# ---------------------------------------
+# Camera Setup (two HuskyLens instances)
+# ---------------------------------------
+# initialize left on /dev/ttyS3 and right on /dev/ttyS1
+try:
+    hl_left = HuskyLensLibrary("SERIAL", "/dev/ttyS3", 9600)
+    hl_right = HuskyLensLibrary("SERIAL", "/dev/ttyS1", 9600)
+    # Switch to Color Recognition algorithm and rename IDs to friendly names
+    try:
+        hl_left.algorthim("ALGORITHM_COLOR_RECOGNITION")
+    except Exception:
+        pass
+    try:
+        hl_right.algorthim("ALGORITHM_COLOR_RECOGNITION")
+    except Exception:
+        pass
+    try:
+        hl_left.setCustomName("Green", 1)
+        hl_left.setCustomName("Red", 2)
+        hl_right.setCustomName("Green", 1)
+        hl_right.setCustomName("Red", 2)
+    except Exception:
+        pass
+except Exception:
+    # If HuskyLens init fails, create placeholders so code doesn't crash.
+    hl_left = None
+    hl_right = None
 
-# -----------------------------
-# Grid positions (2x6 layout) and filtering
-# -----------------------------
-hl = None
-
-PosID_1 = "Empty"
-PosID_2 = "Empty"
-PosID_3 = "Empty"
-PosID_4 = "Empty"
-PosID_5 = "Empty"
-PosID_6 = "Empty"
-
-
-def apply_filters():
-    """
-    Enforce anticlockwise layout rules:
-    - If PosID_2 or PosID_5 occupied -> all others cleared.
-    - PosID_1 and PosID_6 are mutually exclusive; if one occupied, clear the other and clear 2 & 5.
-    - PosID_3 and PosID_4 are mutually exclusive; if one occupied, clear the other and clear 2 & 5.
-    - Maximum of 2 non-empty pillars; if more, keep the first two detected and clear the rest.
-    """
-    global PosID_1, PosID_2, PosID_3, PosID_4, PosID_5, PosID_6
-
-    # Rule A: if center-top (2) or center-bottom (5) present, clear all others
-    if PosID_2 != "Empty":
-        PosID_1 = PosID_3 = PosID_4 = PosID_6 = "Empty"
-    if PosID_5 != "Empty":
-        PosID_1 = PosID_3 = PosID_4 = PosID_6 = "Empty"
-
-    # Rule B: 1 vs 6 mutual exclusion; if one present clear the other and clear 2 & 5
-    if PosID_1 != "Empty":
-        PosID_6 = "Empty"
-        PosID_2 = PosID_5 = "Empty"
-    if PosID_6 != "Empty":
-        PosID_1 = "Empty"
-        PosID_2 = PosID_5 = "Empty"
-
-    # Rule C: 3 vs 4 mutual exclusion; if one present clear the other and clear 2 & 5
-    if PosID_3 != "Empty":
-        PosID_4 = "Empty"
-        PosID_2 = PosID_5 = "Empty"
-    if PosID_4 != "Empty":
-        PosID_3 = "Empty"
-        PosID_2 = PosID_5 = "Empty"
-
-    # Rule D: enforce max 2 pillars (keep first two non-empty in left-to-right order 1..6)
-    positions = [PosID_1, PosID_2, PosID_3, PosID_4, PosID_5, PosID_6]
-    non_empty_count = sum(1 for p in positions if p != "Empty")
-    if non_empty_count > 2:
-        kept = 0
-        for i in range(6):
-            if positions[i] != "Empty":
-                kept += 1
-                if kept > 2:
-                    positions[i] = "Empty"
-        PosID_1, PosID_2, PosID_3, PosID_4, PosID_5, PosID_6 = positions
-
-
-def update_grid_from_huskylens(hl, id_to_color=None):
-    """
-    Read hl.requestAll(), map HuskyLens detection IDs to PosID_1..PosID_6,
-    set each PosID to "Red", "Green", or "Empty", then apply filters.
-    - hl: HuskyLensLibrary instance already initialized in the framework.
-    - id_to_color: optional dict mapping learned object IDs to "Red"/"Green".
-      If None, default mapping assumes learned ID 1 -> "Green", ID 2 -> "Red".
-    After calling this function the global PosID_1..PosID_6 variables are updated.
-    """
-    global PosID_1, PosID_2, PosID_3, PosID_4, PosID_5, PosID_6
-
-    # default color mapping if not provided
-    if id_to_color is None:
-        id_to_color = {1: "Green", 2: "Red"}
-
-    # reset grid each frame
-    PosID_1 = PosID_2 = PosID_3 = PosID_4 = PosID_5 = PosID_6 = "Empty"
-
-    if hl is None or not hasattr(hl, "requestAll"):
-        apply_filters()
-        print(f"Grid after filter: 1={PosID_1}, 2={PosID_2}, 3={PosID_3}, 4={PosID_4}, 5={PosID_5}, 6={PosID_6}")
-        return
-
-    results = hl.requestAll()
-    if results:
-        for r in results:
-            if not hasattr(r, "ID"):
-                continue
-            color = id_to_color.get(r.ID, "Empty")
-            # Map HuskyLens learned ID to grid position by numeric ID 1..6
-            if r.ID == 1:
-                PosID_1 = color
-            elif r.ID == 2:
-                PosID_2 = color
-            elif r.ID == 3:
-                PosID_3 = color
-            elif r.ID == 4:
-                PosID_4 = color
-            elif r.ID == 5:
-                PosID_5 = color
-            elif r.ID == 6:
-                PosID_6 = color
-
-    apply_filters()
-
-    # optional debug print (leave or remove as desired)
-    print(f"Grid after filter: 1={PosID_1}, 2={PosID_2}, 3={PosID_3}, 4={PosID_4}, 5={PosID_5}, 6={PosID_6}")
-
-
-# -----------------------------
-# Route array system
-# -----------------------------
-ROUTE_SLOTS = [0, 0, 0, 0]
-ROUTE_WRITE_INDEX = 1
-TURN_COUNT = 0
-RECORDING_ROUTES = True
-REPLAY_INDEX = 0
-REPLAY_LAPS = 0
-MAX_REPLAY_LAPS = 2  # total laps = 3 (1st lap recording + 2 replay laps)
-REPLAY_ACTIVE = False
-REPLAY_NEXT_TIME = 0.0
-REPLAY_PAUSE_SECONDS = 0.35
-
-CLOCKWISE_ROUTE_GROUPS = {
-    "A": {1, 3, 5, 9, 13, 19, 25, 31},
-    "B": {2, 4, 6, 8, 10, 18, 24, 30, 36},
-    "C": {14, 20, 26, 32},
-    "D": {15, 27, 33},
-}
-
-ANTICLOCKWISE_ROUTE_GROUPS = {
-    "A": {1, 3, 5, 9, 13, 19, 25, 31},
-    "B": {2, 4, 6, 8, 10, 18, 24, 30, 36},
-    "C": {14, 20, 26, 32},
-    "D": {15, 27, 33},
-}
-
-ROUTE_GROUP_TO_ID = {"A": 1, "B": 2, "C": 3, "D": 4}
-
+# Primary camera variable: will be assigned after orientation detection
+PRIMARY_CAMERA = None
 
 def map_detected_id_to_route_group(detected_id, turn_direction):
     """Map a detected turn ID to a compact route group ID for the fixed four-slot array."""
@@ -424,9 +351,9 @@ def execute_route(route_id):
         time.sleep(0.3)
 
 
-# -----------------------------
-# Colour smoothing
-# -----------------------------
+# -------------------------------------------------
+# Colour smoothing (Used for Blue colour detection)
+# -------------------------------------------------
 RGB_EMA_ALPHA = 0.3
 ema_r = None
 ema_g = None
@@ -481,24 +408,40 @@ try:
         raw_r, raw_g, raw_b = rgb
         r, g, b = ema_update(raw_r, raw_g, raw_b)
 
-        # Update grid positions and apply filtering before route logic
-        update_grid_from_huskylens(hl, id_to_color={1: "Green", 2: "Red"})
+        # Request detections from both HuskyLens cameras each loop and print them
+        if hl_left is not None:
+            for res in hl_left.requestAll() or []:
+                if hasattr(res, "ID"):
+                    tag = "[LeftCam][ID1]" if PRIMARY_CAMERA == "LeftCam" else "[LeftCam][ID2]"
+                    print(f"{tag} Valid ID{res.ID} detection at ({res.x},{res.y}) size ({res.width}x{res.height})")
 
-        # Keep the base orientation detection logic intact.
+        if hl_right is not None:
+            for res in hl_right.requestAll() or []:
+                if hasattr(res, "ID"):
+                    tag = "[RightCam][ID1]" if PRIMARY_CAMERA == "RightCam" else "[RightCam][ID2]"
+                    print(f"{tag} Valid ID{res.ID} detection at ({res.x},{res.y}) size ({res.width}x{res.height})")
+
+        # Orientation detection
         if orientation_colour is None:
             if is_orange_line(raw_r, raw_g, raw_b):
                 orientation_colour = "orange"
+                PRIMARY_CAMERA = "RightCam"
                 print("Orientation detected: orange => clockwise")
             elif is_blue_line(r, g, b):
                 orientation_colour = "blue"
+                PRIMARY_CAMERA = "LeftCam"
                 print("Orientation detected: blue => anticlockwise")
 
-        if orientation_colour == "orange":
-            is_orientation_color = is_orange_line(raw_r, raw_g, raw_b)
-            is_opposite_color = is_blue_line(r, g, b)
-        elif orientation_colour == "blue":
-            is_orientation_color = is_blue_line(r, g, b)
-            is_opposite_color = is_orange_line(raw_r, raw_g, raw_b)
+        # Show which camera is primary (1) or secondary (2) on each HuskyLens top-right corner
+        if hl_left is not None:
+            hl_left.customText("1" if PRIMARY_CAMERA == "LeftCam" else "2", 300, 10)
+
+        if hl_right is not None:
+            hl_right.customText("1" if PRIMARY_CAMERA == "RightCam" else "2", 300, 10)
+
+        if orientation_colour in {"orange", "blue"}:
+            is_orientation_color = is_orange_line(raw_r, raw_g, raw_b) if orientation_colour == "orange" else is_blue_line(r, g, b)
+            is_opposite_color = is_blue_line(r, g, b) if orientation_colour == "orange" else is_orange_line(raw_r, raw_g, raw_b)
         else:
             is_orientation_color = False
             is_opposite_color = False
