@@ -263,6 +263,8 @@ EXIT_BURST_FRAMES  = 10    # number of frames the burst lasts (doubled for longe
 # extremes, change these back to 1.0 and 2.0.
 SERVO_TURN_MIN_MS  = 0.9
 SERVO_TURN_MAX_MS  = 2.1
+
+arrayCorrection = 0   # degrees to add/subtract from each heading after each lap
 # ------------------------------------------------------------------
 
 # -----------------------------
@@ -306,7 +308,7 @@ manual_turn_steer_target = 0     # heading used for servo error (index 0: oversh
 last_color_detected     = None
 color_read_threshold    = 10
 # Faster confirmation threshold for blue only
-blue_confirm_threshold  = 3
+blue_confirm_threshold  = 5
 correction_mode         = False
 correction_target       = 0
 correction_frames       = 0
@@ -329,10 +331,10 @@ def advance_rotation_index():
         if lap_count >= 1:
             if orientation_colour == "orange":   # clockwise sequence
                 for i in range(len(rotation_array)):
-                    rotation_array[i] -= 5
+                    rotation_array[i] -= arrayCorrection
             elif orientation_colour == "blue":   # anticlockwise sequence
                 for i in range(len(rotation_array)):
-                    rotation_array[i] += 5
+                    rotation_array[i] += arrayCorrection
             print(f"Lap {lap_count} complete — applied ±10° correction for {orientation_colour} orientation. "
                   f"New rotation_array = {rotation_array}")
 
@@ -375,11 +377,11 @@ while True:
     # ── Orientation detection (runs once) ────────────────────────────────────
     if orientation_colour is None:
         if is_orange_line(orange_check_r, orange_check_g, orange_check_b):
-            rotation_array    = [0, -80, -170, 80]   #clockwise
+            rotation_array    = [0, -90, -175, 90]   #clockwise
             orientation_colour = "orange"
             print("\nCounterclockwise rotation sequence selected")
         elif is_blue_line(blue_check_r, blue_check_g, blue_check_b):
-            rotation_array    = [0, 80, 170, -80]  # anticlockwise
+            rotation_array    = [0, 90, 175, -90]  # anticlockwise
             orientation_colour = "blue"
             print("\nClockwise rotation sequence selected")
 
