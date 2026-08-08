@@ -228,21 +228,25 @@ def normalize_angle_error(target, current):
 # Colour detection helpers — keeps all conditions in one place
 # ------------------------------------------------------------------
 def is_blue_line(r, g, b):
+    if (r, g, b) == (255, 255, 255):
+        return False
     return (
-        (58 <= r <= 227) and
-        (83 <= g <= 237) and
-        (106 <= b <= 182) and
-        (b > g) and
-        (b > r)
+        (b >= 120) and
+        (g >= 70) and
+        (r <= 220) and
+        (g >= r) and
+        (b >= r)
     )
 
 def is_orange_line(r, g, b):
+    if (r, g, b) == (255, 255, 255):
+        return False
     return (
-        (150 <= r <= 255) and
-        (90 <= g <= 206) and
-        (50 <= b <= 132) and
-        (r > g) and
-        (r > b)
+        (r >= 220) and
+        (g >= 180) and
+        (100 <= b <= 170) and
+        (r >= g) and
+        (g > b)
     )
 
 # ------------------------------------------------------------------
@@ -257,6 +261,8 @@ TURN_SETTLE_FRAMES = 6     # frames the servo is held at full lock before
                            # accelerating — gives wheels time to reach endpoint
 EXIT_BURST_POWER   = 70    # brief high-power pulse after exiting turn mode
 EXIT_BURST_FRAMES  = 10    # number of frames the burst lasts (doubled for longer momentum)
+POST_SEQUENCE_REVERSE_RATIO = 0.55
+POST_SEQUENCE_NEUTRAL_ANGLE = 0
 
 # Extend servo range slightly beyond the standard 1.0–2.0 ms spec for
 # maximum physical deflection.  If the servo grunts or buzzes at the
@@ -264,6 +270,7 @@ EXIT_BURST_FRAMES  = 10    # number of frames the burst lasts (doubled for longe
 SERVO_TURN_MIN_MS  = 0.9
 SERVO_TURN_MAX_MS  = 2.1
 
+arrayOffset = 15         # degrees to add/subtract from each heading in rotation_array
 arrayCorrection = 0   # degrees to add/subtract from each heading after each lap
 # ------------------------------------------------------------------
 
@@ -308,7 +315,7 @@ manual_turn_steer_target = 0     # heading used for servo error (index 0: oversh
 last_color_detected     = None
 color_read_threshold    = 10
 # Faster confirmation threshold for blue only
-blue_confirm_threshold  = 5
+blue_confirm_threshold  = 3
 correction_mode         = False
 correction_target       = 0
 correction_frames       = 0
@@ -318,6 +325,13 @@ orange_frames           = 0
 blue_frames             = 0
 line_cooldown           = False
 forward_start_time      = None
+# First-side timing state (measured once)
+FIRST_SIDE_MEASURED     = False
+FIRST_SIDE_START_TIME   = None
+FIRST_SIDE_DURATION     = None
+FIRST_SIDE_HALF         = None
+FIRST_SIDE_MIN          = 0.05
+FIRST_SIDE_MAX          = 10.0
 
 
 def advance_rotation_index():
@@ -377,13 +391,13 @@ while True:
     # ── Orientation detection (runs once) ────────────────────────────────────
     if orientation_colour is None:
         if is_orange_line(orange_check_r, orange_check_g, orange_check_b):
-            rotation_array    = [0, -90, -175, 90]   #clockwise
+            rotation_array    = [0 - arrayOffset, -90 - arrayOffset, 180 - arrayOffset, 90 - arrayOffset]   #clockwise
             orientation_colour = "orange"
-            print("\nCounterclockwise rotation sequence selected")
-        elif is_blue_line(blue_check_r, blue_check_g, blue_check_b):
-            rotation_array    = [0, 90, 175, -90]  # anticlockwise
-            orientation_colour = "blue"
             print("\nClockwise rotation sequence selected")
+        elif is_blue_line(blue_check_r, blue_check_g, blue_check_b):
+            rotation_array    = [0 + arrayOffset, 90 + arrayOffset, 180 + arrayOffset, -90 + arrayOffset]  # anticlockwise
+            orientation_colour = "blue"
+            print("\nCounterclockwise rotation sequence selected")
 
     # ── Colour flags ─────────────────────────────────────────────────────────
     is_orientation_color = False
@@ -446,6 +460,11 @@ while True:
                 print(f"\nPulse complete — advancing to index {current_index}.  "
                       f"Current angle: {gyro.yaw:.2f}°  "
                       f"Burst: {exit_burst_frames} frames at {EXIT_BURST_POWER}%")
+                # Start timing the "first side" when the first manual turn completes.
+                # Only start once for the whole run.
+                if (not FIRST_SIDE_MEASURED) and (FIRST_SIDE_START_TIME is None) and lap_count == 0:
+                    FIRST_SIDE_START_TIME = time.time()
+                    print(f"Started FIRST_SIDE timing at {FIRST_SIDE_START_TIME:.2f}")
         else:
             manual_turn_frames += 1
 
@@ -512,6 +531,12 @@ while True:
 
     # ── Post-sequence mode ──────────────────────────────────────────────────
     elif post_sequence_mode:
+        if forward_start_time is None:
+            forward_start_time = time.time()
+            Movement.set_steering_angle(POST_SEQUENCE_NEUTRAL_ANGLE)
+            Movement.set_motor_forward(NORMAL_SPEED)
+            Movement.start_servo()
+
         # Drive straight forward using heading 0°
         target_angle = 0
         error = normalize_angle_error(target_angle, gyro.yaw)
@@ -520,44 +545,53 @@ while True:
         Movement.set_motor_forward(NORMAL_SPEED)
 
         # Stop when the same orientation colour is detected
-        if orientation_colour == "orange" and is_orange_line(orange_check_r, orange_check_g, orange_check_b):
+        if ((orientation_colour == "orange" and is_orange_line(orange_check_r, orange_check_g, orange_check_b)) or
+            (orientation_colour == "blue"   and is_blue_line(blue_check_r, blue_check_g, blue_check_b))):
+
             Movement.brake()
-            Movement.stop_servo()
+            Movement.set_steering_angle(POST_SEQUENCE_NEUTRAL_ANGLE)
+
+            if forward_start_time is None:
+                forward_start_time = time.time()
+                print("Warning: forward_start_time was None at post-sequence stop, using current time as fallback.")
+
             forward_duration = time.time() - forward_start_time
-            reverse_duration = forward_duration / 2.0
-            Movement.set_motor_forward(0)
+            if forward_duration < 0.05:
+                forward_duration = 0.05
+
+            reverse_duration = forward_duration * POST_SEQUENCE_REVERSE_RATIO
+            time.sleep(0.05)
+
+            GPIO.output(IN1, GPIO.HIGH)
+            GPIO.output(IN2, GPIO.LOW)
+            Movement.set_motor_forward(NORMAL_SPEED)
+
             end_time = time.time() + reverse_duration
             while time.time() < end_time:
-                GPIO.output(IN1, GPIO.HIGH)
-                GPIO.output(IN2, GPIO.LOW)
-                Movement._motor_power = NORMAL_SPEED
                 time.sleep(0.01)
 
             Movement.brake()
-            post_sequence_mode = False
-            print("\nFinal orange line detected — stop at heading 0°.")
-            break
-        elif orientation_colour == "blue" and is_blue_line(blue_check_r, blue_check_g, blue_check_b):
-            Movement.brake()
-            Movement.stop_servo()
-            forward_duration = time.time() - forward_start_time
-            reverse_duration = forward_duration / 2.0
+            GPIO.output(IN1, GPIO.LOW)
+            GPIO.output(IN2, GPIO.HIGH)
             Movement.set_motor_forward(0)
-            end_time = time.time() + reverse_duration
-            while time.time() < end_time:
-                GPIO.output(IN1, GPIO.HIGH)
-                GPIO.output(IN2, GPIO.LOW)
-                Movement._motor_power = NORMAL_SPEED
-                time.sleep(0.01)
+            Movement.set_steering_angle(POST_SEQUENCE_NEUTRAL_ANGLE)
 
-            Movement.brake()
             post_sequence_mode = False
-            print("\nFinal blue line detected — stop at heading 0°.")
+            forward_start_time = None
+            print(f"Final {orientation_colour} line detected — forward {forward_duration:.2f}s, reversed {reverse_duration:.2f}s, stopped at heading 0°.")
             break
 
     # ── Normal mode ───────────────────────────────────────────────────────────
     else:
         if is_orientation_color and last_color_detected != "orientation":
+            # Stop FIRST_SIDE timing when the next manual turn begins (measured once)
+            if (FIRST_SIDE_START_TIME is not None) and (not FIRST_SIDE_MEASURED):
+                measured = time.time() - FIRST_SIDE_START_TIME
+                FIRST_SIDE_DURATION = measured
+                FIRST_SIDE_HALF = max(FIRST_SIDE_MIN, min(FIRST_SIDE_MAX, FIRST_SIDE_DURATION / 2.0))
+                FIRST_SIDE_MEASURED = True
+                print(f"First side measured: {FIRST_SIDE_DURATION:.2f}s -> half={FIRST_SIDE_HALF:.2f}s")
+
             manual_turn_mode         = True
             manual_turn_frames       = 0
             manual_turn_pulse_mode   = False
@@ -657,5 +691,18 @@ while True:
             forward_start_time = time.time()
             post_sequence_mode = True
             print("\nSequence complete. Entering post-sequence forward mode...")
+
+            # If we successfully measured the first-side earlier, drive forward
+            # for half that duration immediately after the main laps.
+            if FIRST_SIDE_MEASURED and FIRST_SIDE_HALF is not None:
+                Movement.set_steering_angle(0)
+                Movement.start_servo()
+                Movement.set_motor_forward(NORMAL_SPEED)
+                _end = time.time() + FIRST_SIDE_HALF
+                while time.time() < _end:
+                    time.sleep(0.01)
+                Movement.brake()
+                Movement.set_motor_forward(0)
+                print(f"Post-laps forward for FIRST_SIDE_HALF={FIRST_SIDE_HALF:.2f}s complete")
 
     time.sleep(0.01)
