@@ -228,35 +228,85 @@ def normalize_angle_error(target, current):
 # Colour detection helpers — keeps all conditions in one place
 # ------------------------------------------------------------------
 def is_blue_line(r, g, b):
+    # Explicitly ignore pure-white and near-white sensor readings
     if (r, g, b) == (255, 255, 255):
         return False
-    return (
-        (b >= 120) and
-        (g >= 70) and
-        (r <= 220) and
-        (g >= r) and
-        (b >= r)
-    )
+    if r >= 250 and g >= 250 and b >= 250:
+        return False
+
+    # Also treat very pale / near-white readings (high channels, low contrast)
+    maxc = max(r, g, b)
+    minc = min(r, g, b)
+    if maxc >= 240 and (maxc - minc) <= 60:
+        return False
+
+    total = r + g + b
+    if total == 0:
+        return False
+
+    r_frac = r / total
+    g_frac = g / total
+    b_frac = b / total
+
+    # Primary blue: blue fraction dominant and reasonably strong
+    if (b_frac >= 0.28) and (b >= 100) and (b > r):
+        return True
+
+    # Accept measured lighter/washed-blue variants where totals are high
+    # Examples to match: (166,181,140), (167,192,149), (237,245,167)
+    if (total >= 450) and (b >= 110) and (g >= 150) and (r <= 240):
+        return True
+
+    # Low-total but clear blue swatches like (58,78,115)
+    if (b >= 100) and (g >= 60) and (r <= 90) and (b > g):
+        return True
+
+    return False
 
 def is_orange_line(r, g, b):
+    # Explicitly ignore pure-white and near-white sensor readings
     if (r, g, b) == (255, 255, 255):
         return False
-    return (
-        (r >= 220) and
-        (g >= 180) and
-        (100 <= b <= 170) and
-        (r >= g) and
-        (g > b)
-    )
+    if r >= 250 and g >= 250 and b >= 250:
+        return False
+
+    # Filter very pale / low-contrast near-white values
+    maxc = max(r, g, b)
+    minc = min(r, g, b)
+    if maxc >= 240 and (maxc - minc) <= 60:
+        return False
+
+    total = r + g + b
+    if total == 0:
+        return False
+
+    r_frac = r / total
+    g_frac = g / total
+    b_frac = b / total
+
+    # Strong red-dominant orange examples (e.g. (255,131,61), (223,132,79))
+    if (r_frac >= 0.40) and (r >= 150) and (r > g) and (r > b):
+        return True
+
+    # Accept moderate red fraction but very bright/washed orange variants
+    # (e.g. (255,223,115), (255,255,174)) — high total, red still larger than blue
+    if (total >= 600) and (r >= 240) and (r > b) and (g >= 120) and (b <= 220):
+        return True
+
+    # Lower-brightness orange like (223,132,79)
+    if (r >= 200) and (g >= 100) and (b <= 120) and (r > b):
+        return True
+
+    return False
 
 # ------------------------------------------------------------------
 # Tuning constants — only touch these to adjust behaviour
 # ------------------------------------------------------------------
 NORMAL_SPEED       = 15    # motor duty cycle during straight driving
 CORRECTION_SPEED   = 15    # motor duty cycle during heading correction
-TURN_SPEED         = 35    # motor duty cycle during the main turn phase
+TURN_SPEED         = 30    # motor duty cycle during the main turn phase
 TURN_CRAWL_SPEED   = 35    # motor duty cycle during settle phase (barely rolling)
-TURN_MAX_ANGLE     = 65    # servo angle during turns, degrees (±75)
+TURN_MAX_ANGLE     = 55    # servo angle during turns, degrees (±75)
 TURN_SETTLE_FRAMES = 6     # frames the servo is held at full lock before
                            # accelerating — gives wheels time to reach endpoint
 EXIT_BURST_POWER   = 70    # brief high-power pulse after exiting turn mode
@@ -270,7 +320,7 @@ POST_SEQUENCE_NEUTRAL_ANGLE = 0
 SERVO_TURN_MIN_MS  = 0.9
 SERVO_TURN_MAX_MS  = 2.1
 
-arrayOffset = 15         # degrees to add/subtract from each heading in rotation_array
+arrayOffset = 10         # degrees to add/subtract from each heading in rotation_array
 arrayCorrection = 0   # degrees to add/subtract from each heading after each lap
 # ------------------------------------------------------------------
 
@@ -313,8 +363,7 @@ manual_turn_pulse_frames = 0
 manual_turn_direction   = None   # "left" or "right" — locked at turn entry
 manual_turn_steer_target = 0     # heading used for servo error (index 0: overshoot target)
 last_color_detected     = None
-color_read_threshold    = 10
-# Faster confirmation threshold for blue only
+color_read_threshold    = 10 # Faster confirmation threshold for blue only
 blue_confirm_threshold  = 3
 correction_mode         = False
 correction_target       = 0
