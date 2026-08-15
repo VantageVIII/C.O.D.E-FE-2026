@@ -302,12 +302,12 @@ def is_orange_line(r, g, b):
 # ------------------------------------------------------------------
 # Tuning constants — only touch these to adjust behaviour
 # ------------------------------------------------------------------
-NORMAL_SPEED       = 15    # motor duty cycle during straight driving
-CORRECTION_SPEED   = 15    # motor duty cycle during heading correction
+NORMAL_SPEED       = 17    # motor duty cycle during straight driving
+CORRECTION_SPEED   = 17    # motor duty cycle during heading correction
 TURN_SPEED         = 30    # motor duty cycle during the main turn phase
-TURN_CRAWL_SPEED   = 35    # motor duty cycle during settle phase (barely rolling)
-TURN_MAX_ANGLE     = 55    # servo angle during turns, degrees (±75)
-TURN_SETTLE_FRAMES = 6     # frames the servo is held at full lock before
+TURN_CRAWL_SPEED   = 30    # motor duty cycle during settle phase (barely rolling)
+TURN_MAX_ANGLE     = 45    # servo angle during turns, degrees (±75)
+TURN_SETTLE_FRAMES = 6     # frames the servo 5is held at full lock before
                            # accelerating — gives wheels time to reach endpoint
 EXIT_BURST_POWER   = 70    # brief high-power pulse after exiting turn mode
 EXIT_BURST_FRAMES  = 10    # number of frames the burst lasts (doubled for longer momentum)
@@ -324,7 +324,7 @@ arrayOffset = 10         # degrees to add/subtract from each heading in rotation
 arrayCorrection = 0   # degrees to add/subtract from each heading after each lap
 # ------------------------------------------------------------------
 
-# -----------------------------
+# ----------------------------- 
 # Colour smoothing (EMA) - added for more robust blue detection
 # -----------------------------
 RGB_EMA_ALPHA = 0.3
