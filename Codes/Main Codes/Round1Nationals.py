@@ -234,22 +234,14 @@ def is_blue_line(r, g, b):
     if r >= 250 and g >= 250 and b >= 250:
         return False
 
-    # New measured blue values: (51,77,111), (47,76,119), (85,120,129),
-    # (50,70,106), (51,80,119), (71,98,107), (161,189,151), (255,255,213),
-    # (56,67,95), (52,80,118), (56,83,121), (174,255,198), (255,255,178)
-    # Accept pale blue variants like (255,255,213) without mistaking them for white.
-    if b >= 100 and b > r and (b >= g or abs(b - g) <= 60) and r <= 150 and g <= 255:
+    # New measured blue values: (51,77,111), (47,76,119), (85,120,129)
+    # Accept pale blue variants like (255,255,187) without mistaking them for white.
+    if b >= 100 and b > g and b > r and r <= 150 and g <= 180:
         return True
 
     # Washed / bright blue readings still retain a strong blue channel and are
     # not pure white or near-white.
-    if (b >= 140 and b < 250 and r >= 150 and g >= 150 and abs(r - g) <= 85 and b > r):
-        return True
-
-    # Additional measured blue readings, including washed / pale variants that
-    # sit very close to white but still retain a distinct blue lift.
-    if (r, g, b) in {(50, 70, 106), (51, 80, 119), (71, 98, 107), (161, 189, 151), (255, 255, 213),
-                     (56, 67, 95), (52, 80, 118), (56, 83, 121), (174, 255, 198), (255, 255, 178)}:
+    if (b >= 140 and b < 250 and r >= 200 and g >= 180 and abs(r - g) <= 35):
         return True
 
     return False
@@ -262,20 +254,12 @@ def is_orange_line(r, g, b):
         return False
 
     # New measured orange values: (255,245,147), (233,132,65), (255,145,67),
-    # (255,223,119), (255,255,133), (255,172,74), (235,130,67), (255,231,138),
-    # (255,227,125), (255,144,70), (227,126,61), (255,168,113).
-    # These are red-dominant and not white.
-    if r >= 180 and r > b and (r >= g or abs(r - g) <= 60) and g <= 255 and b <= 200:
+    # (255,223,119). These are red-dominant and not white.
+    if r >= 180 and r > g and r > b and g <= 245 and b <= 200:
         return True
 
     # Keep brighter / paler orange variants recognised, while still rejecting white.
-    if r >= 220 and g >= 120 and b <= 200 and r > b and (r >= g or abs(r - g) <= 60):
-        return True
-
-    # Additional measured orange readings, including very bright washed variants
-    # that remain visibly orange rather than white.
-    if (r, g, b) in {(255, 255, 133), (255, 172, 74), (235, 130, 67), (255, 231, 138),
-                     (255, 227, 125), (255, 144, 70), (227, 126, 61), (255, 168, 113)}:
+    if r >= 220 and g >= 120 and b <= 200 and r > g and r > b:
         return True
 
     return False
@@ -283,14 +267,14 @@ def is_orange_line(r, g, b):
 # ------------------------------------------------------------------
 # Tuning constants — only touch these to adjust behaviour
 # ------------------------------------------------------------------
-NORMAL_SPEED       = 17    # motor duty cycle during straight driving
-CORRECTION_SPEED   = 17    # motor duty cycle during heading correction
-TURN_SPEED         = 30    # motor duty cycle during the main turn phase
-TURN_CRAWL_SPEED   = 30    # motor duty cycle during settle phase (barely rolling)
+NORMAL_SPEED       = 70    # motor duty cycle during straight driving
+CORRECTION_SPEED   = 70    # motor duty cycle during heading correction
+TURN_SPEED         = 85    # motor duty cycle during the main turn phase
+TURN_CRAWL_SPEED   = 85    # motor duty cycle during settle phase (barely rolling)
 TURN_MAX_ANGLE     = 45    # servo angle during turns, degrees (±75)
-TURN_SETTLE_FRAMES = 6     # frames the servo 5is held at full lock before
+TURN_SETTLE_FRAMES = 6     # frames the servo is held at full lock before
                            # accelerating — gives wheels time to reach endpoint
-EXIT_BURST_POWER   = 70    # brief high-power pulse after exiting turn mode
+EXIT_BURST_POWER   = 100    # brief high-power pulse after exiting turn mode
 EXIT_BURST_FRAMES  = 10    # number of frames the burst lasts (doubled for longer momentum)
 POST_SEQUENCE_REVERSE_RATIO = 0.55
 POST_SEQUENCE_NEUTRAL_ANGLE = 0
@@ -301,7 +285,7 @@ POST_SEQUENCE_NEUTRAL_ANGLE = 0
 SERVO_TURN_MIN_MS  = 0.9
 SERVO_TURN_MAX_MS  = 2.1
 
-arrayOffset = -10         # degrees to add/subtract from each heading in rotation_array
+arrayOffset = 10         # degrees to add/subtract from each heading in rotation_array
 arrayCorrection = 0   # degrees to add/subtract from each heading after each lap
 # ------------------------------------------------------------------
 
@@ -432,23 +416,14 @@ while True:
     # ── Colour flags ─────────────────────────────────────────────────────────
     is_orientation_color = False
     is_opposite_color    = False
-    is_white_reading     = (r >= 240 and g >= 240 and b >= 240) or \
-                          (r >= 220 and g >= 220 and b >= 220 and
-                           abs(r - g) <= 15 and abs(r - b) <= 15 and abs(g - b) <= 15)
 
     if orientation_colour == "orange":
-        if is_white_reading:
-            is_orientation_color = False
-            is_opposite_color = False
-        elif is_orange_line(orange_check_r, orange_check_g, orange_check_b):
+        if is_orange_line(orange_check_r, orange_check_g, orange_check_b):
             is_orientation_color = True
         elif is_blue_line(blue_check_r, blue_check_g, blue_check_b):
             is_opposite_color = True
     elif orientation_colour == "blue":
-        if is_white_reading:
-            is_orientation_color = False
-            is_opposite_color = False
-        elif is_blue_line(blue_check_r, blue_check_g, blue_check_b):
+        if is_blue_line(blue_check_r, blue_check_g, blue_check_b):
             is_orientation_color = True
         elif is_orange_line(orange_check_r, orange_check_g, orange_check_b):
             is_opposite_color = True
@@ -456,7 +431,7 @@ while True:
     # ── Reset colour tracking on non-colour frames ───────────────────────────
     # Prevents a single noisy reading on white from permanently locking
     # last_color_detected and blocking all future colour triggers.
-    if is_white_reading or (not is_orientation_color and not is_opposite_color):
+    if not is_orientation_color and not is_opposite_color:
         last_color_detected = None
 
     # ── Manual turn mode ─────────────────────────────────────────────────────

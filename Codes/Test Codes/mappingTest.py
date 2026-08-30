@@ -1,52 +1,72 @@
 """
-Full runnable script: mat preview + fully enclosed low-poly robot (car) model and tight bounding hitbox.
+Virtual mapping + live IMU link — yaw inversion + 15° left offset + left/right fix.
 
-Controls:
- - Left mouse drag: rotate camera (yaw and pitch)
- - No keyboard movement or mouse-wheel zoom (disabled)
- - Robot spawns centered between inner wall face and mat outer edge, aligned parallel to walls
- - Arrow above robot indicates forward direction (rotates with robot)
+- RDK_HOST set to 10.0.0.124
+- Expects server messages: ax,ay,az,gx,gy,gz,yaw,pitch,roll\n
+- Press C to calibrate: point the real robot forward and press C; the virtual robot will align to the spawn forward heading.
+- Press R to reset robot position to spawn.
+- Press Space to zero velocities.
 """
 
+import socket
 import pygame
 from pygame.locals import *
 from OpenGL.GL import *
 from OpenGL.GLU import *
-from math import sin, cos, radians, atan2, sqrt, tan, pi
+from math import sin, cos, radians, atan2, sqrt, pi
+import time
 
-# ---------- Config ----------
+# ---------------- Network (RDK) ----------------
+RDK_HOST = "10.0.0.124"   # <-- your RDK IP
+RDK_PORT = 5000
+
+LPF_ALPHA = 0.08
+BIAS_ALPHA = 0.001
+ACCEL_THRESHOLD = 0.12
+VEL_DECAY = 0.92
+MAX_VEL_MPS = 2.0
+ZERO_VEL_ACCEL_THRESH = 0.12
+ZERO_VEL_WINDOW_S = 0.35
+
+# Create non-blocking TCP client
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(3.0)
+try:
+    sock.connect((RDK_HOST, RDK_PORT))
+    sock.setblocking(False)
+    print("Connected to RDK at", RDK_HOST, RDK_PORT)
+except Exception as e:
+    print("Warning: could not connect to RDK:", e)
+    sock = None
+
+# ---------------- Config ----------------
 SHOW_MARKER_SQUARES = True
-MARKER_SQUARE_COLOR = (0.8, 0.8, 0.8)  # light grey (marker outlines solid)
+MARKER_SQUARE_COLOR = (0.8, 0.8, 0.8)
 MARKER_SQUARE_SIZE_MM = 50.0
-MARKER_SQUARE_SIZE_CM = MARKER_SQUARE_SIZE_MM / 10.0  # 5.0 cm
+MARKER_SQUARE_SIZE_CM = MARKER_SQUARE_SIZE_MM / 10.0
 MARKER_STROKE_MM = 1.0
-MARKER_STROKE_CM = MARKER_STROKE_MM / 10.0  # 0.1 cm
+MARKER_STROKE_CM = MARKER_STROKE_MM / 10.0
 
-# Circle parameters (85 mm diameter)
 CIRCLE_DIAMETER_MM = 85.0
-CIRCLE_DIAMETER_CM = CIRCLE_DIAMETER_MM / 10.0  # 8.5 cm
-CIRCLE_RADIUS_CM = CIRCLE_DIAMETER_CM / 2.0     # 4.25 cm
-CIRCLE_SEGMENTS = 48                            # smoothness for outline
+CIRCLE_DIAMETER_CM = CIRCLE_DIAMETER_MM / 10.0
+CIRCLE_RADIUS_CM = CIRCLE_DIAMETER_CM / 2.0
+CIRCLE_SEGMENTS = 48
 
-# CMYK 20,0,100,0 -> convert to RGB
 C, M, Y, K = 0.20, 0.0, 1.00, 0.0
 CIRCLE_RGB = ((1.0 - C) * (1.0 - K), (1.0 - M) * (1.0 - K), (1.0 - Y) * (1.0 - K))
 
-# dash/gap lengths for stipple (in cm)
-DASH_LEN_CM = 2.0   # 2 cm dash
-GAP_LEN_CM = 1.0    # 1 cm gap
+DASH_LEN_CM = 2.0
+GAP_LEN_CM = 1.0
 
-DEBUG_DRAW_MARKERS = False  # set True to draw small debug cubes at markpoints
+DEBUG_DRAW_MARKERS = False
 
-# ---------- Scale and geometry (1 unit = 1 cm) ----------
 MAT_HALF = 150.0
 BORDER_WIDTH = 10.0
-OUTER_HALF = MAT_HALF + BORDER_WIDTH  # 160
+OUTER_HALF = MAT_HALF + BORDER_WIDTH
 
 INNER_HALF = 40.0
 INNER_WALL_HALF = 50.0
 
-# Vertical positions
 FLOOR_TOP_Y = -1.0
 FLOOR_THICKNESS = 0.1
 FLOOR_BOTTOM_Y = FLOOR_TOP_Y - FLOOR_THICKNESS
@@ -57,24 +77,35 @@ WALL_THICKNESS = 1.0
 
 EPS = 0.001
 
-# Colors
 COLOR_FLOOR = (1.0, 1.0, 1.0)
 COLOR_BORDER = (0.0, 0.0, 0.5)
 COLOR_INNER_SQUARE = (0.0, 0.0, 0.5)
 COLOR_WALLS = (0.0, 0.0, 0.0)
 COLOR_ORANGE = (1.0, 0.45, 0.0)
 COLOR_BLUE = (0.0, 0.45, 1.0)
-COLOR_GRID = (0.8, 0.8, 0.8)  # light grey stippled lines
+COLOR_GRID = (0.8, 0.8, 0.8)
 COLOR_MARKER_DEBUG = (1.0, 0.0, 0.0)
 
-# Markpoint parameters
-ROW_A_CM = 40.0   # 400 mm -> 40 cm
-ROW_B_CM = 60.0   # 600 mm -> 60 cm
-ACROSS_POSITIONS = (0.0, 50.0, 100.0)  # cm across the zone
+ROW_A_CM = 40.0
+ROW_B_CM = 60.0
+ACROSS_POSITIONS = (0.0, 50.0, 100.0)
 
 OUTER_INSET_CM = 42.0
 
-# ---------- Basic box drawer ----------
+# ---------------- Basic drawing helpers ----------------
+def lpf_update(prev, sample, alpha):
+    return prev + alpha * (sample - prev)
+
+
+def is_stationary(accel_history, threshold):
+    if len(accel_history) < 5:
+        return False
+    mags = [sqrt(x * x + y * y + z * z) for x, y, z in accel_history]
+    mean_mag = sum(mags) / len(mags)
+    var_mag = sum((m - mean_mag) ** 2 for m in mags) / len(mags)
+    return mean_mag < threshold and var_mag < threshold * threshold
+
+
 def draw_box(x_min, y_min, z_min, x_max, y_max, z_max, color):
     glColor3f(*color)
     glBegin(GL_QUADS)
@@ -110,7 +141,7 @@ def draw_box(x_min, y_min, z_min, x_max, y_max, z_max, color):
     glVertex3f(x_max, y_min, z_max)
     glEnd()
 
-# ---------- Scene pieces ----------
+# ---------------- Scene pieces ----------------
 def ground_with_hole():
     draw_box(-MAT_HALF, FLOOR_BOTTOM_Y, INNER_HALF, MAT_HALF, FLOOR_TOP_Y, MAT_HALF, COLOR_FLOOR)
     draw_box(-MAT_HALF, FLOOR_BOTTOM_Y, -MAT_HALF, MAT_HALF, FLOOR_TOP_Y, -INNER_HALF, COLOR_FLOOR)
@@ -145,7 +176,7 @@ def outer_walls_inside_border():
     draw_box(-outer, WALL_BOTTOM_Y, -outer, -inner, WALL_HEIGHT, outer, COLOR_WALLS)
     draw_box(inner, WALL_BOTTOM_Y, -outer, outer, WALL_HEIGHT, outer, COLOR_WALLS)
 
-# ---------- Corner stripe helpers ----------
+# ---------------- Corner stripe helpers ----------------
 def outer_edge_targets_for_corner(outer_corner_x, outer_corner_z, inset_cm=OUTER_INSET_CM):
     sx = -1.0 if outer_corner_x < 0 else 1.0
     sz = -1.0 if outer_corner_z < 0 else 1.0
@@ -263,7 +294,7 @@ def draw_alternating_segments():
         sx, sz, ex, ez = seg
         draw_stripe_between(sx, sz, ex, ez, stripe_width, stripe_y_bottom, stripe_y_top, col)
 
-# ---------- Markpoint computation ----------
+# ---------------- Markpoint computation ----------------
 def compute_markpoints():
     inner_face = INNER_WALL_HALF - WALL_THICKNESS
     markpoints = {2: [], 4: [], 6: [], 8: []}
@@ -298,10 +329,10 @@ def compute_markpoints():
 
     return markpoints
 
-# ---------- Marker square solid hollow outline (solid lines) ----------
+# ---------------- Marker square and circle ----------------
 def draw_marker_square_solid_outline(cx, cz, color=MARKER_SQUARE_COLOR):
-    half = MARKER_SQUARE_SIZE_CM / 2.0  # 2.5 cm
-    stroke = MARKER_STROKE_CM           # 0.1 cm
+    half = MARKER_SQUARE_SIZE_CM / 2.0
+    stroke = MARKER_STROKE_CM
 
     y_top = FLOOR_TOP_Y + 0.02
     y_bottom = y_top - 0.2
@@ -320,19 +351,14 @@ def draw_marker_square_solid_outline(cx, cz, color=MARKER_SQUARE_COLOR):
         draw_box(ox_min, y_bottom, oz_min, ox_max, y_top, oz_max, color)
         return
 
-    # Top strip (solid)
     draw_box(ox_min, y_bottom, iz_max, ox_max, y_top, oz_max, color)
-    # Bottom strip (solid)
     draw_box(ox_min, y_bottom, oz_min, ox_max, y_top, iz_min, color)
-    # Left strip (solid)
     draw_box(ox_min, y_bottom, iz_min, ix_min, y_top, iz_max, color)
-    # Right strip (solid)
     draw_box(ix_max, y_bottom, iz_min, ox_max, y_top, iz_max, color)
 
-# ---------- Draw hollow circle outline at marker ----------
 def draw_circle_outline(cx, cz, outer_radius_cm, stroke_cm, segments, color_rgb):
     inner_radius = max(0.0, outer_radius_cm - stroke_cm)
-    y = FLOOR_TOP_Y + 0.03  # slightly above mat surface
+    y = FLOOR_TOP_Y + 0.03
 
     glColor3f(*color_rgb)
     glBegin(GL_TRIANGLE_STRIP)
@@ -346,7 +372,7 @@ def draw_circle_outline(cx, cz, outer_radius_cm, stroke_cm, segments, color_rgb)
         glVertex3f(ix, y, iz)
     glEnd()
 
-# ---------- Utility overlap checks ----------
+# ---------------- Utility overlap checks ----------------
 def segment_overlaps_square(ax, az, bx, bz, square_cx, square_cz, half_size_cm):
     sx_min = square_cx - half_size_cm
     sx_max = square_cx + half_size_cm
@@ -396,7 +422,7 @@ def segment_overlaps_circle(ax, az, bx, bz, circle_cx, circle_cz, radius_cm):
     else:
         return False
 
-# ---------- Draw stippled axis-aligned segments ----------
+# ---------------- Draw stippled axis-aligned segments ----------------
 def draw_stippled_axis_aligned(ax, az, bx, bz, stroke_cm, dash_len_cm, gap_len_cm, color, marker_squares, circles, center_clip_half):
     combined_squares = list(marker_squares)
     combined_squares.append((0.0, 0.0, center_clip_half))
@@ -460,7 +486,7 @@ def draw_stippled_axis_aligned(ax, az, bx, bz, stroke_cm, dash_len_cm, gap_len_c
     else:
         return
 
-# ---------- Build connections and extensions ----------
+# ---------------- Build connections and extensions ----------------
 def build_marker_connections(markpoints):
     segments = []
     for zone in (2, 8):
@@ -546,14 +572,12 @@ def build_interior_stippled_extensions(markpoints, circle_radius_cm):
             segments.append((start_x, z, inner_face, z))
     return segments
 
-# ---------- Low-poly enclosed car (robot) and bounding hitbox ----------
+# ---------------- Low-poly enclosed car (robot) and bounding hitbox ----------------
 def draw_cylinder_x(center_x, center_y, center_z, radius, half_width, segments, color):
-    """Draw a short cylinder aligned along X with closed end caps for a solid wheel."""
     glColor3f(*color)
     x0 = center_x - half_width
     x1 = center_x + half_width
 
-    # Rounded side surface
     glBegin(GL_QUADS)
     for i in range(segments):
         a0 = (2.0 * pi * i) / segments
@@ -568,7 +592,6 @@ def draw_cylinder_x(center_x, center_y, center_z, radius, half_width, segments, 
         glVertex3f(x0, y1, z1)
     glEnd()
 
-    # End caps to close the wheel faces
     for cap_x in (x0, x1):
         glBegin(GL_TRIANGLE_FAN)
         glVertex3f(cap_x, center_y, center_z)
@@ -583,15 +606,11 @@ def draw_wheel(cx, cz, wheel_radius_cm, wheel_half_width_cm, y_center, color=(0.
     draw_cylinder_x(cx, y_center, cz, wheel_radius_cm, wheel_half_width_cm, segments=20, color=color)
 
 def draw_enclosed_lowpoly_car(x, z, yaw_deg):
-    """
-    Fully enclosed low-poly robot drawn as one rigid object.
-    The entire body, wheels, wireframe box, and directional arrow rotate together.
-    """
     glPushMatrix()
     glTranslatef(x, 0.0, z)
-    glRotatef(yaw_deg, 0.0, 1.0, 0.0)
+    glRotatef(yaw_deg + 180.0, 0.0, 1.0, 0.0)
 
-    # Dimensions (cm)
+    # Car body only; no separate IMU box.
     wheel_radius = 3.25
     wheel_half_width = 2.5 / 2.0
     wheelspan = 11.0
@@ -606,7 +625,6 @@ def draw_enclosed_lowpoly_car(x, z, yaw_deg):
     half_wheelspan = wheelspan / 2.0
     body_top = body_bottom + body_height
 
-    # Axles
     rear_axle_local_z = -half_body_len + rear_wheel_center_from_rear
     front_axle_local_z = rear_axle_local_z + (body_length - 2 * rear_wheel_center_from_rear)
 
@@ -614,13 +632,11 @@ def draw_enclosed_lowpoly_car(x, z, yaw_deg):
     right_x = half_wheelspan
     wheel_y_center = FLOOR_TOP_Y + wheel_radius
 
-    # Draw wheels in local robot space
     draw_wheel(left_x, rear_axle_local_z, wheel_radius, wheel_half_width, wheel_y_center)
     draw_wheel(right_x, rear_axle_local_z, wheel_radius, wheel_half_width, wheel_y_center)
     draw_wheel(left_x, front_axle_local_z, wheel_radius, wheel_half_width, wheel_y_center)
     draw_wheel(right_x, front_axle_local_z, wheel_radius, wheel_half_width, wheel_y_center)
 
-    # Body vertices in local robot space
     y0 = FLOOR_TOP_Y + body_bottom
     base_top = FLOOR_TOP_Y + (body_bottom + body_height * 0.35)
     roof_y = FLOOR_TOP_Y + body_bottom + (body_height * 0.6)
@@ -649,7 +665,6 @@ def draw_enclosed_lowpoly_car(x, z, yaw_deg):
     r_fr_t = ( hr_w, roof_top,  hr_len)
     r_fl_t = (-hr_w, roof_top,  hr_len)
 
-    # Body faces
     glColor3f(0.15, 0.35, 0.8)
     glBegin(GL_QUADS)
     for v in (bl, br, fr, fl):
@@ -693,14 +708,12 @@ def draw_enclosed_lowpoly_car(x, z, yaw_deg):
         glVertex3f(*v)
     glEnd()
 
-    # Headlights
     glColor3f(1.0, 0.9, 0.6)
     hx_l = (-half_body_w * 0.6, base_top - 0.2, half_body_len + 0.01)
     hx_r = ( half_body_w * 0.6, base_top - 0.2, half_body_len + 0.01)
     for hx in (hx_l, hx_r):
         draw_box(hx[0] - 0.6, hx[1] - 0.2, hx[2] - 0.2, hx[0] + 0.6, hx[1] + 0.2, hx[2] + 0.2, (1.0, 0.9, 0.6))
 
-    # Windshield
     glColor3f(0.05, 0.15, 0.25)
     glBegin(GL_QUADS)
     glVertex3f(-hr_w * 0.9, roof_y + 0.5, hr_len)
@@ -709,7 +722,6 @@ def draw_enclosed_lowpoly_car(x, z, yaw_deg):
     glVertex3f( hr_w * 0.9, roof_y + 0.5, hr_len)
     glEnd()
 
-    # Directional arrow in local space
     arrow_height = roof_top + 6.0
     base_local_z = half_body_len - 2.0
     tip_local_z = half_body_len + 3.0
@@ -725,27 +737,20 @@ def draw_enclosed_lowpoly_car(x, z, yaw_deg):
     glVertex3f( 1.5, arrow_height, base_local_z)
     glEnd()
 
-    # Tight wireframe box around the robot in local space
-    body_length = 21.5
-    body_width = 8.0
-    wheel_radius = 3.25
-    wheel_half_width = 2.5 / 2.0
-    half_len = body_length / 2.0
-    half_w = body_width / 2.0
     margin = max(wheel_radius, wheel_half_width) + 0.5
-    lx = half_w + margin
-    lz = half_len + margin
-    y0 = FLOOR_TOP_Y + 1.2
-    y1 = y0 + 7.5
+    lx = half_body_w + margin
+    lz = half_body_len + margin
+    y_box = FLOOR_TOP_Y + 1.2
+    y_box_top = y_box + 7.5
     corners = [
-        (-lx, y0, -lz),
-        ( lx, y0, -lz),
-        ( lx, y0,  lz),
-        (-lx, y0,  lz),
-        (-lx, y1, -lz),
-        ( lx, y1, -lz),
-        ( lx, y1,  lz),
-        (-lx, y1,  lz),
+        (-lx, y_box, -lz),
+        ( lx, y_box, -lz),
+        ( lx, y_box,  lz),
+        (-lx, y_box,  lz),
+        (-lx, y_box_top, -lz),
+        ( lx, y_box_top, -lz),
+        ( lx, y_box_top,  lz),
+        (-lx, y_box_top,  lz),
     ]
     glColor3f(0.0, 0.0, 0.0)
     glLineWidth(2.0)
@@ -763,20 +768,97 @@ def draw_enclosed_lowpoly_car(x, z, yaw_deg):
 
     glPopMatrix()
 
-# ---------- Spawn logic: place robot centered between inner face and mat outer edge ----------
+# ---------------- Hitbox computation and mapping draw ----------------
+def _rotate_y(point_x, point_z, yaw_deg):
+    a = radians(yaw_deg)
+    ca = cos(a)
+    sa = sin(a)
+    rx = point_x * ca - point_z * sa
+    rz = point_x * sa + point_z * ca
+    return rx, rz
+
+def get_robot_hitbox(world_x, world_z, yaw_deg):
+    wheel_radius = 3.25
+    wheel_half_width = 2.5 / 2.0
+    body_bottom = 1.2
+    body_height = 7.5
+    body_length = 21.5
+    body_width = 8.0
+
+    half_len = body_length / 2.0
+    half_w = body_width / 2.0
+    margin = max(wheel_radius, wheel_half_width) + 0.5
+    lx = half_w + margin
+    lz = half_len + margin
+    y0 = FLOOR_TOP_Y + 1.2
+    y1 = y0 + 7.5
+
+    local_corners = [
+        (-lx, y0, -lz),
+        ( lx, y0, -lz),
+        ( lx, y0,  lz),
+        (-lx, y0,  lz),
+        (-lx, y1, -lz),
+        ( lx, y1, -lz),
+        ( lx, y1,  lz),
+        (-lx, y1,  lz),
+    ]
+
+    world_corners = []
+    for lx_c, ly_c, lz_c in local_corners:
+        rx, rz = _rotate_y(lx_c, lz_c, yaw_deg)
+        wx = rx + world_x
+        wz = rz + world_z
+        wy = ly_c
+        world_corners.append((wx, wy, wz))
+
+    return world_corners
+
+# ---------------- Spawn logic ----------------
 def compute_spawn_between_inner_and_outer():
-    """
-    Compute spawn position so the car is centered in the corridor between the inner wall face
-    and the mat outer edge, with its facing direction parallel to the walls.
-    """
     inner_face = INNER_WALL_HALF - WALL_THICKNESS
     outer_edge = MAT_HALF
     spawn_z = (inner_face + outer_edge) / 2.0
     spawn_x = 0.0
-    spawn_yaw_deg = 90.0  # parallel to the inner/outer wall edges (faces along +X)
+    spawn_yaw_deg = 90.0
     return spawn_x, spawn_z, spawn_yaw_deg
 
-# ---------- Main (third-person, mouse rotation only, start looking down) ----------
+# ---------------- Helper: parse incoming RDK data ----------------
+def try_read_rdk(sock, buffer):
+    """
+    Non-blocking read from socket. Returns (buffer, list_of_lines)
+    """
+    lines = []
+    if not sock:
+        return buffer, lines
+    try:
+        data = sock.recv(4096).decode('utf-8')
+        if not data:
+            return buffer, lines
+        buffer += data
+        while '\n' in buffer:
+            line, buffer = buffer.split('\n', 1)
+            if line.strip():
+                lines.append(line.strip())
+    except BlockingIOError:
+        pass
+    except Exception:
+        pass
+    return buffer, lines
+
+# ---------------- Precompute markpoints and connections ----------------
+markpoints = compute_markpoints()
+marker_squares = []
+circles = []
+for zone in (2, 4, 6, 8):
+    for (mx, mz, row) in markpoints[zone]:
+        marker_squares.append((mx, mz, MARKER_SQUARE_SIZE_CM / 2.0))
+        circles.append((mx, mz, CIRCLE_RADIUS_CM))
+connections = build_marker_connections(markpoints)
+edge_extensions = build_edge_extensions(markpoints, CIRCLE_RADIUS_CM)
+interior_stippled_extensions = build_interior_stippled_extensions(markpoints, CIRCLE_RADIUS_CM)
+
+# ---------------- Main loop with IMU-driven robot pose updates ----------------
 def main():
     pygame.init()
     display = (1280, 720)
@@ -789,46 +871,51 @@ def main():
 
     max_distance = 2000
     fov = 45
-    half_size = OUTER_HALF + 20
 
-    # Camera: start looking down from above
+    # Camera start
     yaw_deg = 0.0
-    pitch_deg = 80.0   # steep downward angle
+    pitch_deg = 80.0
     min_pitch = 5.0
     max_pitch = 89.0
 
     target_x = 0.0
     target_z = 0.0
     target_y = FLOOR_TOP_Y + 0.0
-    cam_distance = 220.0  # cm
+    cam_distance = 220.0
 
     mouse_down = False
     last_mouse_pos = (0, 0)
-    mouse_sensitivity = 0.25  # degrees per pixel
+    mouse_sensitivity = 0.25
 
     clock = pygame.time.Clock()
+    debug_font = pygame.font.SysFont(None, 18)
 
-    markpoints = compute_markpoints()
-    marker_half = MARKER_SQUARE_SIZE_CM / 2.0  # 2.5 cm
-
-    marker_squares = []
-    circles = []
-    for zone in (2, 4, 6, 8):
-        for (mx, mz, row) in markpoints[zone]:
-            marker_squares.append((mx, mz, marker_half))
-            circles.append((mx, mz, CIRCLE_RADIUS_CM))
-
-    connections = build_marker_connections(markpoints)
-    edge_extensions = build_edge_extensions(markpoints, CIRCLE_RADIUS_CM)
-    interior_stippled_extensions = build_interior_stippled_extensions(markpoints, CIRCLE_RADIUS_CM)
-
-    pygame.mouse.set_visible(True)
-
-    # Compute spawn position between inner and outer wall
     spawn_x, spawn_z, spawn_yaw_deg = compute_spawn_between_inner_and_outer()
+    robot_x = spawn_x
+    robot_z = spawn_z
+    robot_yaw = spawn_yaw_deg
+
+    # Robot motion state (world frame)
+    vel_x = 0.0
+    vel_z = 0.0
+
+    gravity_estimate = [0.0, 0.0, 0.0]
+    accel_bias = [0.0, 0.0, 0.0]
+    accel_history = []
+    last_stationary_ts = time.monotonic()
+    gravity_initialized = False
+
+    # IMU state placeholders
+    ax = ay = az = 0.0
+    yaw = None
+
+    yaw_zero = None
+
+    read_buffer = ""
+    last_time = time.time()
 
     while True:
-        dt_ms = clock.tick(60)
+        dt = clock.tick(60) / 1000.0
         for event in pygame.event.get():
             if event.type == QUIT:
                 pygame.quit()
@@ -846,83 +933,159 @@ def main():
                 dx = mx - lx
                 dy = my - ly
                 last_mouse_pos = (mx, my)
-
                 yaw_deg += dx * mouse_sensitivity
-                # invert vertical drag so dragging up looks down
                 pitch_deg -= dy * mouse_sensitivity
+                if pitch_deg < min_pitch: pitch_deg = min_pitch
+                if pitch_deg > max_pitch: pitch_deg = max_pitch
+            if event.type == KEYDOWN:
+                if event.key == K_r:
+                    robot_x, robot_z = spawn_x, spawn_z
+                    vel_x = vel_z = 0.0
+                if event.key == K_SPACE:
+                    vel_x = vel_z = 0.0
+                if event.key == K_c:
+                    if yaw is not None:
+                        yaw_zero = yaw
+                        print(f"yaw_zero set to {yaw_zero:.2f}")
 
-                if pitch_deg < min_pitch:
-                    pitch_deg = min_pitch
-                if pitch_deg > max_pitch:
-                    pitch_deg = max_pitch
+        # Read RDK data (non-blocking)
+        if sock:
+            read_buffer, lines = try_read_rdk(sock, read_buffer)
+            for line in lines:
+                parts = line.split(',')
+                try:
+                    if len(parts) == 3:
+                        yaw, ax, ay = [float(v) for v in parts[:3]]
+                    elif len(parts) >= 9:
+                        ax, ay, az, gx, gy, gz, yaw, pitch, roll = [float(v) for v in parts[:9]]
+                    else:
+                        continue
+                    if yaw_zero is None:
+                        yaw_zero = yaw
+                        print(f"yaw_zero set to {yaw_zero:.2f}")
+                except Exception:
+                    continue
 
-        # compute camera position from spherical coordinates around target
-        yaw_rad = radians(yaw_deg)
-        pitch_rad = radians(pitch_deg)
-        cam_x = target_x + cam_distance * cos(pitch_rad) * sin(yaw_rad)
-        cam_y = target_y + cam_distance * sin(pitch_rad)
-        cam_z = target_z + cam_distance * cos(pitch_rad) * cos(yaw_rad)
+        if yaw_zero is None or yaw is None:
+            robot_yaw = spawn_yaw_deg
+        else:
+            robot_yaw = (yaw - yaw_zero) % 360.0
 
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        # Accelerometer-only translation pipeline: gravity estimate, bias removal, velocity/position integration.
+        accel_history.append((ax, ay, az))
+        if len(accel_history) > 12:
+            accel_history.pop(0)
+
+        if not gravity_initialized:
+            gravity_estimate[:] = [ax, ay, az]
+            gravity_initialized = True
+        else:
+            gravity_estimate[0] = lpf_update(gravity_estimate[0], ax, LPF_ALPHA)
+            gravity_estimate[1] = lpf_update(gravity_estimate[1], ay, LPF_ALPHA)
+            gravity_estimate[2] = lpf_update(gravity_estimate[2], az, LPF_ALPHA)
+
+        ax_lin = ax - gravity_estimate[0] - accel_bias[0]
+        ay_lin = ay - gravity_estimate[1] - accel_bias[1]
+
+        ax_lin = 0.0 if abs(ax_lin) < ACCEL_THRESHOLD else ax_lin
+        ay_lin = 0.0 if abs(ay_lin) < ACCEL_THRESHOLD else ay_lin
+
+        stationary = is_stationary(accel_history, ZERO_VEL_ACCEL_THRESH)
+        now_ts = time.monotonic()
+
+        if stationary and (now_ts - last_stationary_ts) >= ZERO_VEL_WINDOW_S:
+            vel_x = 0.0
+            vel_z = 0.0
+            accel_bias[0] = lpf_update(accel_bias[0], ax - gravity_estimate[0], BIAS_ALPHA)
+            accel_bias[1] = lpf_update(accel_bias[1], ay - gravity_estimate[1], BIAS_ALPHA)
+            accel_bias[2] = lpf_update(accel_bias[2], az - gravity_estimate[2], BIAS_ALPHA)
+            last_stationary_ts = now_ts
+        else:
+            yaw_rad = radians(robot_yaw)
+
+            # Robot-local planar acceleration: X = forward/back, Y = left/right.
+            # Rotate the IMU frame into world x/z motion using the live yaw.
+            forward_x = -sin(yaw_rad)
+            forward_z = -cos(yaw_rad)
+            left_x = cos(yaw_rad)
+            left_z = -sin(yaw_rad)
+
+            ax_mps2 = ax_lin * 9.81
+            ay_mps2 = ay_lin * 9.81
+
+            accel_world_x = ax_mps2 * forward_x + ay_mps2 * left_x
+            accel_world_z = ax_mps2 * forward_z + ay_mps2 * left_z
+
+            vel_x += accel_world_x * dt
+            vel_z += accel_world_z * dt
+
+            vel_x = max(-MAX_VEL_MPS, min(MAX_VEL_MPS, vel_x))
+            vel_z = max(-MAX_VEL_MPS, min(MAX_VEL_MPS, vel_z))
+
+            # Velocity is in m/s, while the plotted field uses centimeters.
+            robot_x += vel_x * dt * 100.0
+            robot_z += vel_z * dt * 100.0
+
+            vel_x *= VEL_DECAY
+            vel_z *= VEL_DECAY
+
+            last_stationary_ts = now_ts if abs(accel_world_x) < 0.02 and abs(accel_world_z) < 0.02 else last_stationary_ts
+
+        # --- Rendering ---
+        pitch_r = radians(pitch_deg)
+        yaw_r = radians(yaw_deg)
+        cam_x = target_x + cam_distance * sin(yaw_r) * sin(pitch_r)
+        cam_z = target_z + cam_distance * cos(yaw_r) * sin(pitch_r)
+        cam_y = target_y + cam_distance * cos(pitch_r)
+
+        glViewport(0, 0, display[0], display[1])
+        glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         gluPerspective(fov, (display[0] / display[1]), 0.1, max_distance)
-        gluLookAt(cam_x, cam_y, cam_z, target_x, target_y, target_z, 0.0, 1.0, 0.0)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+        gluLookAt(cam_x, cam_y, cam_z, target_x, target_y, target_z, 0, 1, 0)
 
-        # Draw scene
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+        # Draw scene pieces
         ground_with_hole()
         border()
         inner_square_plate()
-        draw_alternating_segments()
         inner_walls()
         outer_walls_inside_border()
+        draw_alternating_segments()
 
-        # marker square outlines (solid)
         if SHOW_MARKER_SQUARES:
-            for zone in (2, 4, 6, 8):
-                for (mx, mz, row) in markpoints[zone]:
-                    draw_marker_square_solid_outline(mx, mz, MARKER_SQUARE_COLOR)
+            for (mx, mz, row) in markpoints[2] + markpoints[4] + markpoints[6] + markpoints[8]:
+                draw_marker_square_solid_outline(mx, mz)
+                draw_circle_outline(mx, mz, CIRCLE_RADIUS_CM, 0.6, CIRCLE_SEGMENTS, CIRCLE_RGB)
 
-        # circles (hollow outlines)
-        for zone in (2, 4, 6, 8):
-            for (mx, mz, row) in markpoints[zone]:
-                draw_circle_outline(mx, mz, CIRCLE_RADIUS_CM, MARKER_STROKE_CM, CIRCLE_SEGMENTS, CIRCLE_RGB)
+        for seg in connections:
+            draw_stippled_axis_aligned(*seg, MARKER_STROKE_CM, DASH_LEN_CM, GAP_LEN_CM, COLOR_GRID, marker_squares, circles, INNER_HALF - EPS)
+        for seg in edge_extensions:
+            draw_stippled_axis_aligned(*seg, MARKER_STROKE_CM, DASH_LEN_CM, GAP_LEN_CM, COLOR_GRID, marker_squares, circles, INNER_HALF - EPS)
+        for seg in interior_stippled_extensions:
+            draw_stippled_axis_aligned(*seg, MARKER_STROKE_CM, DASH_LEN_CM, GAP_LEN_CM, COLOR_GRID, marker_squares, circles, INNER_HALF - EPS)
+
+        # Draw the single car object at the live pose.
+        draw_enclosed_lowpoly_car(robot_x, robot_z, robot_yaw)
 
         if DEBUG_DRAW_MARKERS:
-            # small debug cubes at markpoints
-            size = 0.5
-            y_bottom = FLOOR_TOP_Y + 0.01
-            y_top = y_bottom + 1.0
-            for zone, pts in markpoints.items():
-                for (x, z, row) in pts:
-                    draw_box(x - size, y_bottom, z - size, x + size, y_top, z + size, COLOR_MARKER_DEBUG)
+            for (cx, cy, cz) in hitbox_corners:
+                draw_box(cx - 0.5, cy - 0.5, cz - 0.5, cx + 0.5, cy + 0.5, cz + 0.5, COLOR_MARKER_DEBUG)
 
-        # zone grid lines (stippled)
-        for x in (-50.0, 50.0):
-            draw_stippled_axis_aligned(x, -MAT_HALF, x, -INNER_HALF, MARKER_STROKE_CM, DASH_LEN_CM, GAP_LEN_CM, COLOR_GRID, marker_squares, circles, INNER_HALF - EPS)
-            draw_stippled_axis_aligned(x, INNER_HALF, x, MAT_HALF, MARKER_STROKE_CM, DASH_LEN_CM, GAP_LEN_CM, COLOR_GRID, marker_squares, circles, INNER_HALF - EPS)
-
-        for z in (-50.0, 50.0):
-            draw_stippled_axis_aligned(-MAT_HALF, z, -INNER_HALF, z, MARKER_STROKE_CM, DASH_LEN_CM, GAP_LEN_CM, COLOR_GRID, marker_squares, circles, INNER_HALF - EPS)
-            draw_stippled_axis_aligned(INNER_HALF, z, MAT_HALF, z, MARKER_STROKE_CM, DASH_LEN_CM, GAP_LEN_CM, COLOR_GRID, marker_squares, circles, INNER_HALF - EPS)
-
-        # orthogonal connections between marker squares (stippled, includes A-B spans)
-        for (ax, az, bx, bz) in connections:
-            draw_stippled_axis_aligned(ax, az, bx, bz, MARKER_STROKE_CM, DASH_LEN_CM, GAP_LEN_CM, COLOR_GRID, marker_squares, circles, INNER_HALF - EPS)
-
-        # edge extensions to exterior (stippled)
-        for (ax, az, bx, bz) in edge_extensions:
-            draw_stippled_axis_aligned(ax, az, bx, bz, MARKER_STROKE_CM, DASH_LEN_CM, GAP_LEN_CM, COLOR_GRID, marker_squares, circles, INNER_HALF - EPS)
-
-        # interior stippled extensions toward inner wall faces (stippled)
-        for (ax, az, bx, bz) in interior_stippled_extensions:
-            draw_stippled_axis_aligned(ax, az, bx, bz, MARKER_STROKE_CM, DASH_LEN_CM, GAP_LEN_CM, COLOR_GRID, marker_squares, circles, INNER_HALF - EPS)
-
-        # explicit middle column and middle row lines (stippled across full mat, clipped)
-        draw_stippled_axis_aligned(0.0, -MAT_HALF, 0.0, MAT_HALF, MARKER_STROKE_CM, DASH_LEN_CM, GAP_LEN_CM, COLOR_GRID, marker_squares, circles, INNER_HALF - EPS)
-        draw_stippled_axis_aligned(-MAT_HALF, 0.0, MAT_HALF, 0.0, MARKER_STROKE_CM, DASH_LEN_CM, GAP_LEN_CM, COLOR_GRID, marker_squares, circles, INNER_HALF - EPS)
-
-        # Draw the robot as a single rigid object, including wheels, wireframe box, and arrow
-        draw_enclosed_lowpoly_car(spawn_x, spawn_z, spawn_yaw_deg)
+        debug_lines = [
+            f"ax_raw={ax:.3f}",
+            f"ax_lin={ax_lin:.3f}",
+            f"vel=({vel_x:.3f},{vel_z:.3f})",
+            f"pos=({robot_x:.3f},{robot_z:.3f})",
+            f"g=({gravity_estimate[0]:.3f},{gravity_estimate[1]:.3f},{gravity_estimate[2]:.3f})",
+            f"bias=({accel_bias[0]:.3f},{accel_bias[1]:.3f},{accel_bias[2]:.3f})",
+        ]
+        for i, line in enumerate(debug_lines):
+            text = debug_font.render(line, True, (255, 255, 255))
+            pygame.display.get_surface().blit(text, (10, 10 + i * 18))
 
         pygame.display.flip()
 

@@ -69,7 +69,7 @@ def motor_loop(freq=200):
             GPIO.output(ENA, GPIO.LOW)
             time.sleep(period)
 
-def start_motor(power=40):
+def start_motor(power=50):
     global _motor_power, _motor_running
     _motor_power = power
     _motor_running = True

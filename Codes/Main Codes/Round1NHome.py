@@ -238,12 +238,12 @@ def is_blue_line(r, g, b):
     # (50,70,106), (51,80,119), (71,98,107), (161,189,151), (255,255,213),
     # (56,67,95), (52,80,118), (56,83,121), (174,255,198), (255,255,178)
     # Accept pale blue variants like (255,255,213) without mistaking them for white.
-    if b >= 100 and b > r and (b >= g or abs(b - g) <= 60) and r <= 150 and g <= 255:
+    if b >= 120 and b > r and (b >= g + 10 or abs(b - g) <= 35) and r <= 120 and g <= 210:
         return True
 
     # Washed / bright blue readings still retain a strong blue channel and are
     # not pure white or near-white.
-    if (b >= 140 and b < 250 and r >= 150 and g >= 150 and abs(r - g) <= 85 and b > r):
+    if (b >= 170 and b < 250 and r >= 180 and g >= 150 and abs(r - g) <= 60 and b > r + 10):
         return True
 
     # Additional measured blue readings, including washed / pale variants that
@@ -265,11 +265,11 @@ def is_orange_line(r, g, b):
     # (255,223,119), (255,255,133), (255,172,74), (235,130,67), (255,231,138),
     # (255,227,125), (255,144,70), (227,126,61), (255,168,113).
     # These are red-dominant and not white.
-    if r >= 180 and r > b and (r >= g or abs(r - g) <= 60) and g <= 255 and b <= 200:
+    if r >= 200 and r > b and (r >= g + 10 or abs(r - g) <= 35) and g <= 210 and b <= 180:
         return True
 
     # Keep brighter / paler orange variants recognised, while still rejecting white.
-    if r >= 220 and g >= 120 and b <= 200 and r > b and (r >= g or abs(r - g) <= 60):
+    if r >= 230 and g >= 140 and b <= 170 and r > b and (r >= g + 5 or abs(r - g) <= 35):
         return True
 
     # Additional measured orange readings, including very bright washed variants
@@ -283,12 +283,12 @@ def is_orange_line(r, g, b):
 # ------------------------------------------------------------------
 # Tuning constants — only touch these to adjust behaviour
 # ------------------------------------------------------------------
-NORMAL_SPEED       = 17    # motor duty cycle during straight driving
-CORRECTION_SPEED   = 17    # motor duty cycle during heading correction
-TURN_SPEED         = 30    # motor duty cycle during the main turn phase
-TURN_CRAWL_SPEED   = 30    # motor duty cycle during settle phase (barely rolling)
+NORMAL_SPEED       = 40    # motor duty cycle during straight driving
+CORRECTION_SPEED   = 40    # motor duty cycle during heading correction
+TURN_SPEED         = 65    # motor duty cycle during the main turn phase
+TURN_CRAWL_SPEED   = 65    # motor duty cycle during settle phase (barely rolling)
 TURN_MAX_ANGLE     = 45    # servo angle during turns, degrees (±75)
-TURN_SETTLE_FRAMES = 6     # frames the servo 5is held at full lock before
+TURN_SETTLE_FRAMES = 8     # frames the servo 5is held at full lock before
                            # accelerating — gives wheels time to reach endpoint
 EXIT_BURST_POWER   = 70    # brief high-power pulse after exiting turn mode
 EXIT_BURST_FRAMES  = 10    # number of frames the burst lasts (doubled for longer momentum)
@@ -301,7 +301,7 @@ POST_SEQUENCE_NEUTRAL_ANGLE = 0
 SERVO_TURN_MIN_MS  = 0.9
 SERVO_TURN_MAX_MS  = 2.1
 
-arrayOffset = -10         # degrees to add/subtract from each heading in rotation_array
+arrayOffset = 0         # degrees to add/subtract from each heading in rotation_array
 arrayCorrection = 0   # degrees to add/subtract from each heading after each lap
 # ------------------------------------------------------------------
 
@@ -343,9 +343,10 @@ manual_turn_pulse_mode  = False
 manual_turn_pulse_frames = 0
 manual_turn_direction   = None   # "left" or "right" — locked at turn entry
 manual_turn_steer_target = 0     # heading used for servo error (index 0: overshoot target)
+manual_turn_cooldown_until = 0.0
 last_color_detected     = None
 color_read_threshold    = 10 # Faster confirmation threshold for blue only
-blue_confirm_threshold  = 3
+blue_confirm_threshold  = 5
 correction_mode         = False
 correction_target       = 0
 correction_frames       = 0
@@ -494,6 +495,7 @@ while True:
                 manual_turn_mode        = False
                 manual_turn_pulse_mode  = False
                 manual_turn_frames      = 0
+                manual_turn_cooldown_until = time.time() + 1.5
                 exit_burst_frames       = EXIT_BURST_FRAMES
                 advance_rotation_index()
                 print(f"\nPulse complete — advancing to index {current_index}.  "
@@ -623,19 +625,22 @@ while True:
     # ── Normal mode ───────────────────────────────────────────────────────────
     else:
         if is_orientation_color and last_color_detected != "orientation":
-            # Stop FIRST_SIDE timing when the next manual turn begins (measured once)
-            if (FIRST_SIDE_START_TIME is not None) and (not FIRST_SIDE_MEASURED):
-                measured = time.time() - FIRST_SIDE_START_TIME
-                FIRST_SIDE_DURATION = measured
-                FIRST_SIDE_HALF = max(FIRST_SIDE_MIN, min(FIRST_SIDE_MAX, FIRST_SIDE_DURATION / 2.0))
-                FIRST_SIDE_MEASURED = True
-                print(f"First side measured: {FIRST_SIDE_DURATION:.2f}s -> half={FIRST_SIDE_HALF:.2f}s")
+            if time.time() < manual_turn_cooldown_until:
+                is_orientation_color = False
+            else:
+                # Stop FIRST_SIDE timing when the next manual turn begins (measured once)
+                if (FIRST_SIDE_START_TIME is not None) and (not FIRST_SIDE_MEASURED):
+                    measured = time.time() - FIRST_SIDE_START_TIME
+                    FIRST_SIDE_DURATION = measured
+                    FIRST_SIDE_HALF = max(FIRST_SIDE_MIN, min(FIRST_SIDE_MAX, FIRST_SIDE_DURATION / 2.0))
+                    FIRST_SIDE_MEASURED = True
+                    print(f"First side measured: {FIRST_SIDE_DURATION:.2f}s -> half={FIRST_SIDE_HALF:.2f}s")
 
-            manual_turn_mode         = True
-            manual_turn_frames       = 0
-            manual_turn_pulse_mode   = False
-            manual_turn_pulse_frames = 0
-            manual_turn_start_angle  = gyro.yaw
+                manual_turn_mode         = True
+                manual_turn_frames       = 0
+                manual_turn_pulse_mode   = False
+                manual_turn_pulse_frames = 0
+                manual_turn_start_angle  = gyro.yaw
             # Overshoot 50° in the direction of the next heading in the sequence,
             # so the car turns toward the next gate, not always the same direction.
             if current_index + 1 < len(rotation_array):
@@ -647,19 +652,19 @@ while True:
             else:
                 manual_turn_target = rotation_array[current_index] - 50
 
-            last_color_detected = "orientation"
-            print(f"\nOrientation colour detected — starting manual 50° turn.  "
-                  f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}° "
-                  f"(next heading = {_next_hdg}°)")
-            # Lock the direction now so it can't flip mid-turn
-            if current_index == 0:
-                manual_turn_steer_target = manual_turn_target
-                _init_err = normalize_angle_error(manual_turn_target, gyro.yaw)
-            else:
-                manual_turn_steer_target = _next_hdg
-                _init_err = normalize_angle_error(_next_hdg, gyro.yaw)
-            manual_turn_direction = "left" if _init_err > 0 else "right"
-            print(f"Turn direction locked: {manual_turn_direction}")
+                last_color_detected = "orientation"
+                print(f"\nOrientation colour detected — starting manual 50° turn.  "
+                      f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}° "
+                      f"(next heading = {_next_hdg}°)")
+                # Lock the direction now so it can't flip mid-turn
+                if current_index == 0:
+                    manual_turn_steer_target = manual_turn_target
+                    _init_err = normalize_angle_error(manual_turn_target, gyro.yaw)
+                else:
+                    manual_turn_steer_target = _next_hdg
+                    _init_err = normalize_angle_error(_next_hdg, gyro.yaw)
+                manual_turn_direction = "left" if _init_err > 0 else "right"
+                print(f"Turn direction locked: {manual_turn_direction}")
         else:
             # Straight driving with gyro correction
             target_angle = rotation_array[current_index]
@@ -745,3 +750,4 @@ while True:
                 print(f"Post-laps forward for FIRST_SIDE_HALF={FIRST_SIDE_HALF:.2f}s complete")
 
     time.sleep(0.01)
+

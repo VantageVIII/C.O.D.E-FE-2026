@@ -222,22 +222,41 @@ class ColorSensor:
 # Orientation helpers
 # -----------------------------
 def is_blue_line(r, g, b):
-    return (
-        (58 <= r <= 227) and
-        (83 <= g <= 237) and
-        (106 <= b <= 182) and
-        (b > g) and
-        (b > r)
-    )
+    # Explicitly ignore pure-white and near-white sensor readings
+    if (r, g, b) == (255, 255, 255):
+        return False
+    if r >= 250 and g >= 250 and b >= 250:
+        return False
+
+    # New measured blue values: (51,77,111), (47,76,119), (85,120,129)
+    # Accept pale blue variants like (255,255,187) without mistaking them for white.
+    if b >= 100 and b > g and b > r and r <= 150 and g <= 180:
+        return True
+
+    # Washed / bright blue readings still retain a strong blue channel and are
+    # not pure white or near-white.
+    if (b >= 140 and b < 250 and r >= 200 and g >= 180 and abs(r - g) <= 35):
+        return True
+
+    return False
 
 def is_orange_line(r, g, b):
-    return (
-        (150 <= r <= 255) and
-        (90 <= g <= 206) and
-        (50 <= b <= 132) and
-        (r > g) and
-        (r > b)
-    )
+    # Explicitly ignore pure-white and near-white sensor readings
+    if (r, g, b) == (255, 255, 255):
+        return False
+    if r >= 250 and g >= 250 and b >= 250:
+        return False
+
+    # New measured orange values: (255,245,147), (233,132,65), (255,145,67),
+    # (255,223,119). These are red-dominant and not white.
+    if r >= 180 and r > g and r > b and g <= 245 and b <= 200:
+        return True
+
+    # Keep brighter / paler orange variants recognised, while still rejecting white.
+    if r >= 220 and g >= 120 and b <= 200 and r > g and r > b:
+        return True
+
+    return False
 
 def within_tolerance(value, target, tol=0.05):
     return abs(value - target) <= target * tol
