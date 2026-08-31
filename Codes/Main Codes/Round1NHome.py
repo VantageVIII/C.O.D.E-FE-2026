@@ -5,6 +5,17 @@ import struct
 import smbus2
 import threading
 
+# HuskyLens colour recognition (primary colour sensor replacement)
+from huskylib import HuskyLensLibrary
+# Primary HuskyLens on serial port 3
+try:
+    hl = HuskyLensLibrary("SERIAL", "/dev/ttyS3", 9600)
+    hl.algorthim("ALGORITHM_COLOR_RECOGNITION")
+    print("HuskyLens initialized on /dev/ttyS3")
+except Exception as _e:
+    hl = None
+    print("HuskyLens init failed or not present:", _e)
+
 # -----------------------------
 # GPIO Setup
 # -----------------------------
@@ -283,14 +294,14 @@ def is_orange_line(r, g, b):
 # ------------------------------------------------------------------
 # Tuning constants — only touch these to adjust behaviour
 # ------------------------------------------------------------------
-NORMAL_SPEED       = 40    # motor duty cycle during straight driving
-CORRECTION_SPEED   = 40    # motor duty cycle during heading correction
-TURN_SPEED         = 65    # motor duty cycle during the main turn phase
+NORMAL_SPEED       = 65    # motor duty cycle during straight driving
+CORRECTION_SPEED   = 60    # motor duty cycle during heading correction
+TURN_SPEED         = 70    # motor duty cycle during the main turn phase
 TURN_CRAWL_SPEED   = 65    # motor duty cycle during settle phase (barely rolling)
 TURN_MAX_ANGLE     = 45    # servo angle during turns, degrees (±75)
-TURN_SETTLE_FRAMES = 8     # frames the servo 5is held at full lock before
+TURN_SETTLE_FRAMES = 6     # frames the servo 5is held at full lock before
                            # accelerating — gives wheels time to reach endpoint
-EXIT_BURST_POWER   = 70    # brief high-power pulse after exiting turn mode
+EXIT_BURST_POWER   = 100    # brief high-power pulse after exiting turn mode
 EXIT_BURST_FRAMES  = 10    # number of frames the burst lasts (doubled for longer momentum)
 POST_SEQUENCE_REVERSE_RATIO = 0.55
 POST_SEQUENCE_NEUTRAL_ANGLE = 0
@@ -301,7 +312,7 @@ POST_SEQUENCE_NEUTRAL_ANGLE = 0
 SERVO_TURN_MIN_MS  = 0.9
 SERVO_TURN_MAX_MS  = 2.1
 
-arrayOffset = 0         # degrees to add/subtract from each heading in rotation_array
+arrayOffset = -15         # degrees to add/subtract from each heading in rotation_array
 arrayCorrection = 0   # degrees to add/subtract from each heading after each lap
 # ------------------------------------------------------------------
 
@@ -323,11 +334,33 @@ def ema_update(r, g, b):
         ema_b = RGB_EMA_ALPHA * b + (1 - RGB_EMA_ALPHA) * ema_b
     return int(ema_r), int(ema_g), int(ema_b)
 
+
+def confirm_hl_burst(target_id, samples=5, interval_s=0.05, required_positives=5):
+    """Confirm a HuskyLens ID across several frames by polling requestAll()."""
+    if hl is None:
+        return False
+    positives = 0
+    for _ in range(samples):
+        try:
+            results = hl.requestAll()
+            found = False
+            if results:
+                for det in results:
+                    if hasattr(det, "ID") and det.ID == target_id:
+                        found = True
+                        break
+            if found:
+                positives += 1
+            time.sleep(interval_s)
+        except Exception:
+            time.sleep(interval_s)
+    return positives >= required_positives
+
 # -----------------------------
 # Main
 # -----------------------------
 gyro  = GyroSensor()
-color = ColorSensor()
+# HuskyLens V1 serial colour detector replaces the old ColorSensor for all runtime colour detection.
 
 rotation_array = [0]
 current_index  = 0
@@ -363,6 +396,10 @@ FIRST_SIDE_DURATION     = None
 FIRST_SIDE_HALF         = None
 FIRST_SIDE_MIN          = 0.05
 FIRST_SIDE_MAX          = 10.0
+
+# HuskyLens colour IDs (adjust if you trained different IDs)
+HUSKYLENS_ORANGE_ID = 2   # treat ID 0 as orange/orientation colour
+HUSKYLENS_BLUE_ID   = 1   # treat ID 1 as blue/opposite colour
 
 
 def advance_rotation_index():
@@ -411,48 +448,52 @@ frame_count = 0
 
 while True:
     gyro.update()
-    rgb = color.get_rgb()
-    raw_r, raw_g, raw_b = rgb
-    r, g, b = ema_update(raw_r, raw_g, raw_b)
-    # use raw_* for orange checks and r,g,b (EMA) for blue checks
-    orange_check_r, orange_check_g, orange_check_b = raw_r, raw_g, raw_b
-    blue_check_r, blue_check_g, blue_check_b = r, g, b
-    frame_count += 1
 
-    # ── Orientation detection (runs once) ────────────────────────────────────
-    if orientation_colour is None:
-        if is_orange_line(orange_check_r, orange_check_g, orange_check_b):
-            rotation_array    = [0 - arrayOffset, -90 - arrayOffset, 180 - arrayOffset, 90 - arrayOffset]   #clockwise
-            orientation_colour = "orange"
-            print("\nClockwise rotation sequence selected")
-        elif is_blue_line(blue_check_r, blue_check_g, blue_check_b):
-            rotation_array    = [0 + arrayOffset, 90 + arrayOffset, 180 + arrayOffset, -90 + arrayOffset]  # anticlockwise
-            orientation_colour = "blue"
-            print("\nCounterclockwise rotation sequence selected")
+    # HuskyLens detection block replaces colour-sensor reads
+    husky_detections = []
+    if hl is not None:
+        try:
+            results = hl.requestAll()
+            if results:
+                for det in results:
+                    if hasattr(det, "ID"):
+                        husky_detections.append(det)
+        except Exception:
+            husky_detections = []
+    else:
+        husky_detections = []
 
-    # ── Colour flags ─────────────────────────────────────────────────────────
+    # Default raw/EMA placeholders for logging compatibility
+    raw_r = raw_g = raw_b = 0
+    r = g = b = 0
+
     is_orientation_color = False
-    is_opposite_color    = False
-    is_white_reading     = (r >= 240 and g >= 240 and b >= 240) or \
-                          (r >= 220 and g >= 220 and b >= 220 and
-                           abs(r - g) <= 15 and abs(r - b) <= 15 and abs(g - b) <= 15)
+    is_opposite_color = False
+    is_white_reading = False  # HuskyLens does not provide a white concept
 
-    if orientation_colour == "orange":
-        if is_white_reading:
-            is_orientation_color = False
-            is_opposite_color = False
-        elif is_orange_line(orange_check_r, orange_check_g, orange_check_b):
-            is_orientation_color = True
-        elif is_blue_line(blue_check_r, blue_check_g, blue_check_b):
-            is_opposite_color = True
-    elif orientation_colour == "blue":
-        if is_white_reading:
-            is_orientation_color = False
-            is_opposite_color = False
-        elif is_blue_line(blue_check_r, blue_check_g, blue_check_b):
-            is_orientation_color = True
-        elif is_orange_line(orange_check_r, orange_check_g, orange_check_b):
-            is_opposite_color = True
+    if husky_detections:
+        if orientation_colour is None:
+            if any(d.ID == HUSKYLENS_ORANGE_ID for d in husky_detections):
+                rotation_array = [0 - arrayOffset, -90 - arrayOffset, 180 - arrayOffset, 90 - arrayOffset]
+                orientation_colour = "orange"
+                print("\nClockwise rotation sequence selected (HuskyLens)")
+            elif any(d.ID == HUSKYLENS_BLUE_ID for d in husky_detections):
+                rotation_array = [0 + arrayOffset, 90 + arrayOffset, 180 + arrayOffset, -90 + arrayOffset]
+                orientation_colour = "blue"
+                print("\nCounterclockwise rotation sequence selected (HuskyLens)")
+
+        if orientation_colour == "orange":
+            is_orientation_color = any(d.ID == HUSKYLENS_ORANGE_ID for d in husky_detections)
+            is_opposite_color    = any(d.ID == HUSKYLENS_BLUE_ID for d in husky_detections)
+        else:  # orientation_colour == "blue"
+            is_orientation_color = any(d.ID == HUSKYLENS_BLUE_ID for d in husky_detections)
+            is_opposite_color    = any(d.ID == HUSKYLENS_ORANGE_ID for d in husky_detections)
+    else:
+        is_orientation_color = False
+        is_opposite_color = False
+        last_color_detected = None
+
+    frame_count += 1
 
     # ── Reset colour tracking on non-colour frames ───────────────────────────
     # Prevents a single noisy reading on white from permanently locking
@@ -539,10 +580,17 @@ while True:
                 _next_hdg = rotation_array[current_index + 1]
             else:
                 _next_hdg = rotation_array[0]
-            if _next_hdg >= rotation_array[current_index]:
-                manual_turn_target = rotation_array[current_index] + 50
+            if orientation_colour == "blue":
+                # Anticlockwise path: blue is the entrance gate, so it should stay left.
+                if _next_hdg >= rotation_array[current_index]:
+                    manual_turn_target = rotation_array[current_index] - 50
+                else:
+                    manual_turn_target = rotation_array[current_index] + 50
             else:
-                manual_turn_target = rotation_array[current_index] - 50
+                if _next_hdg >= rotation_array[current_index]:
+                    manual_turn_target = rotation_array[current_index] + 50
+                else:
+                    manual_turn_target = rotation_array[current_index] - 50
 
             last_color_detected = "orientation"
             print(f"\nOrientation colour during correction — entering manual turn.  "
@@ -555,7 +603,10 @@ while True:
             else:
                 manual_turn_steer_target = _next_hdg
                 _init_err = normalize_angle_error(_next_hdg, gyro.yaw)
-            manual_turn_direction = "left" if _init_err > 0 else "right"
+            if orientation_colour == "blue":
+                manual_turn_direction = "left"
+            else:
+                manual_turn_direction = "left" if _init_err > 0 else "right"
             print(f"Turn direction locked: {manual_turn_direction}")
         else:
             error     = normalize_angle_error(correction_target, gyro.yaw)
@@ -585,9 +636,9 @@ while True:
         Movement.set_steering_angle(raw_angle)
         Movement.set_motor_forward(NORMAL_SPEED)
 
-        # Stop when the same orientation colour is detected
-        if ((orientation_colour == "orange" and is_orange_line(orange_check_r, orange_check_g, orange_check_b)) or
-            (orientation_colour == "blue"   and is_blue_line(blue_check_r, blue_check_g, blue_check_b))):
+        # Stop when the same orientation colour is detected via HuskyLens IDs
+        if ((orientation_colour == "orange" and any(d.ID == HUSKYLENS_ORANGE_ID for d in husky_detections)) or
+            (orientation_colour == "blue"   and any(d.ID == HUSKYLENS_BLUE_ID for d in husky_detections))):
 
             Movement.brake()
             Movement.set_steering_angle(POST_SEQUENCE_NEUTRAL_ANGLE)
@@ -647,24 +698,34 @@ while True:
                 _next_hdg = rotation_array[current_index + 1]
             else:
                 _next_hdg = rotation_array[0]
-            if _next_hdg >= rotation_array[current_index]:
-                manual_turn_target = rotation_array[current_index] + 50
-            else:
-                manual_turn_target = rotation_array[current_index] - 50
-
-                last_color_detected = "orientation"
-                print(f"\nOrientation colour detected — starting manual 50° turn.  "
-                      f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}° "
-                      f"(next heading = {_next_hdg}°)")
-                # Lock the direction now so it can't flip mid-turn
-                if current_index == 0:
-                    manual_turn_steer_target = manual_turn_target
-                    _init_err = normalize_angle_error(manual_turn_target, gyro.yaw)
+            if orientation_colour == "blue":
+                # Anticlockwise route: the blue gate is the entrance, so keep the turn left.
+                if _next_hdg >= rotation_array[current_index]:
+                    manual_turn_target = rotation_array[current_index] - 50
                 else:
-                    manual_turn_steer_target = _next_hdg
-                    _init_err = normalize_angle_error(_next_hdg, gyro.yaw)
+                    manual_turn_target = rotation_array[current_index] + 50
+            else:
+                if _next_hdg >= rotation_array[current_index]:
+                    manual_turn_target = rotation_array[current_index] + 50
+                else:
+                    manual_turn_target = rotation_array[current_index] - 50
+
+            last_color_detected = "orientation"
+            print(f"\nOrientation colour detected — starting manual 50° turn.  "
+                  f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}° "
+                  f"(next heading = {_next_hdg}°)")
+            # Lock the direction now so it can't flip mid-turn
+            if current_index == 0:
+                manual_turn_steer_target = manual_turn_target
+                _init_err = normalize_angle_error(manual_turn_target, gyro.yaw)
+            else:
+                manual_turn_steer_target = _next_hdg
+                _init_err = normalize_angle_error(_next_hdg, gyro.yaw)
+            if orientation_colour == "blue":
+                manual_turn_direction = "left"
+            else:
                 manual_turn_direction = "left" if _init_err > 0 else "right"
-                print(f"Turn direction locked: {manual_turn_direction}")
+            print(f"Turn direction locked: {manual_turn_direction}")
         else:
             # Straight driving with gyro correction
             target_angle = rotation_array[current_index]
@@ -693,11 +754,11 @@ while True:
             # "confirmed" once its counter reaches its threshold.  Any frame that
             # does not match a line colour resets BOTH counters, so white or noise can
             # never accumulate toward the threshold.
-            # (This block moved here to keep behaviour identical while using EMA'd RGB)
-            if is_orange_line(orange_check_r, orange_check_g, orange_check_b):
+            # Using HuskyLens IDs instead of RGB sensor values keeps the rest of the state machine unchanged.
+            if orientation_colour == "orange" and is_orientation_color:
                 orange_frames += 1
                 blue_frames    = 0
-            elif is_blue_line(blue_check_r, blue_check_g, blue_check_b):
+            elif orientation_colour == "blue" and is_orientation_color:
                 blue_frames   += 1
                 orange_frames  = 0
             else:
