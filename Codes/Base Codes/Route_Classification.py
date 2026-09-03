@@ -28,8 +28,8 @@ hl_right.setCustomName("Red", 2)
 # -------------------------
 FOV = 60.0
 WIDTH = 320
-YAW_LEFT = +12.0
-YAW_RIGHT = -12.0
+YAW_LEFT = +15.0
+YAW_RIGHT = -15.0
 PITCH = -12.0  # downward tilt
 
 NEAR_THRESH = 100
