@@ -1,0 +1,15 @@
+#!/bin/bash
+
+### BEGIN INIT INFO
+# Provides:          round1s_service
+# Required-Start:    $all
+# Required-Stop:     
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Start Round1S.py at boot time
+# Description:       Enable service provided by Round1S.py
+### END INIT INFO
+
+/usr/bin/python3 /home/sunrise/Documents/Round1S.py &
+
+exit 0

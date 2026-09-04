@@ -1,0 +1,3 @@
+- Hobot.GPIO - GPIO library for RDK X5
+- smbus2 - Managing I2C data
+- Huskylens Python Library - Managing the information recieved from the Huskylens Camera

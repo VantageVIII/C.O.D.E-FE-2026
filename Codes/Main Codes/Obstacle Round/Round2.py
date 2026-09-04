@@ -2,71 +2,8 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
 # WRO 2026 Future Engineers — Obstacle Challenge
-# ALL-IN-ONE MONOLITHIC SCRIPT
 # =============================================================================
 """
-===============================================================================
-WRO FUTURE ENGINEERS - GITHUB DESCRIPTION TEMPLATE (5000+ characters required)
-===============================================================================
-[TEAM NAME] - WRO 2026 Future Engineers Obstacle Challenge
-
-1. Introduction
-(Write about your team, your country, and your overall approach to the 2026
-Obstacle Challenge. Explain your hardware choices, specifically why you chose
-the RDK X5 and HuskyLens sensors.)
-
-2. Hardware Architecture
-- Chassis: (Describe your physical car modifications)
-- Processing: RDK X5 running Ubuntu/Python 3.10.12.
-- Vision: 3x HuskyLens V1 sensors (Left, Right, Down) connected via Serial.
-- IMU: WT901-style Serial Gyro on /dev/ttyS7 for heading hold and corner turns.
-- Actuation: Bit-bang PWM control for the steering servo and main drive motor,
-  controlled via custom Python daemon threads to prevent main-loop blocking.
-
-3. Software Architecture
-This script uses a modular state-machine approach flattened into a single file
-for deployment simplicity. The architecture consists of:
-- Hardware Abstraction: `Movement` (daemon threads for precise 50Hz/200Hz PWM),
-  `GyroSensor` (UART parsing), and `HuskyLensWrapper` (safe serial wrappers).
-- Perception: Sensor fusion combining Left and Right forward HuskyLens cameras
-  to detect Green/Red pillars and Purple parking markers. The Down camera reads
-  Blue/Orange lines to determine clockwise/counterclockwise track orientation.
-- Navigation (State Machine): The `Navigator` class handles states:
-  DETECTING_ORIENTATION -> STRAIGHT_DRIVING -> SIGN_AVOIDANCE ->
-  MANUAL_TURN -> POST_SEQUENCE -> PARKING -> STOPPED.
-- Parking Controller: A dedicated sub-state machine (`ParkingController`)
-  that orchestrates the parallel parking sequence using time-based dead reckoning.
-
-4. Obstacle Management & Avoidance
-Our approach to the Obstacle Challenge heavily relies on early detection and
-heading offsets. When the forward cameras detect a Green pillar (Keep Left),
-the robot adds a +25 degree offset to its target gyro heading. For a Red pillar
-(Keep Right), it adds -25 degrees. The state machine locks into `SIGN_AVOIDANCE`
-mode until the pillar clears the camera's field of view for 8 consecutive frames,
-preventing the robot from prematurely steering back into the obstacle.
-
-5. Lap Counting & Cornering
-We determine laps using the rotation array wrapping. The down camera detects the
-entry gate color (Blue = Counter-clockwise, Orange = Clockwise). Each time the
-floor line is crossed, the `current_index` advances. 4 crossings = 1 lap.
-Cornering uses an open-loop "settle and pulse" method: the servo turns to full
-lock while crawling to ensure mechanical limits are reached, then the motor
-pulses at high speed to swing the rear end around, exiting with a burst of power
-to stabilize the heading.
-
-6. Parking Bonus Maneuver
-After 3 completed laps (Rulebook §8), the vehicle transitions to a scanning mode
-for the Purple parking marker. Once detected, the `ParkingController` executes:
-- Approach: Drive toward the marker until it passes under the camera blind spot.
-- Drive Past: Overshoot slightly to set up a reverse angle.
-- Reverse Align: Back up straight alongside the parking zone.
-- Turn-in: Full-lock reverse into the zone.
-- Straighten: Counter-steer reverse to parallel the wall.
-- Final Creep: Pull forward slightly to center in the zone.
-
-(Expand these sections with your specific tuning, physical build struggles,
-and team journey to reach the 5000 character limit required by WRO.)
-
 ===============================================================================
 TUNING & TROUBLESHOOTING GUIDE
 ===============================================================================
@@ -116,7 +53,7 @@ GYRO_BAUD       = 9600
 # ── Physical Dimensions ──────────────────────────────────────────────────────
 WHEELSPAN_CM      = 11.5
 WHEEL_DIAMETER_MM = 65
-ROBOT_LENGTH_CM   = 20.0
+ROBOT_LENGTH_CM   = 30.0
 
 # ── HuskyLens ID Mapping ─────────────────────────────────────────────────────
 HL_DOWN_BLUE_ID   = 1           # Blue on the down camera
@@ -137,11 +74,11 @@ SERVO_TURN_MAX_MS   = 2.1
 SERVO_OFFSET        = 0
 
 # ── Motor / Speed Tuning ─────────────────────────────────────────────────────
-NORMAL_SPEED        = 65
-CORRECTION_SPEED    = 60
-TURN_SPEED          = 70
-TURN_CRAWL_SPEED    = 65
-EXIT_BURST_POWER    = 100
+NORMAL_SPEED        = 25
+CORRECTION_SPEED    = 20
+TURN_SPEED          = 30
+TURN_CRAWL_SPEED    = 30
+EXIT_BURST_POWER    = 40
 EXIT_BURST_FRAMES   = 10
 
 MOTOR_PWM_FREQ      = 200
@@ -155,7 +92,7 @@ TURN_EXIT_DELAY      = 0.1
 
 POST_SEQUENCE_REVERSE_RATIO  = 0.55
 POST_SEQUENCE_NEUTRAL_ANGLE  = 0
-ARRAY_OFFSET         = -10
+ARRAY_OFFSET         = -20
 ARRAY_CORRECTION     = 0
 
 # ── Color Confirmation ───────────────────────────────────────────────────────
@@ -167,7 +104,7 @@ FIRST_SIDE_MAX = 10.0
 
 # ── Competition Rules ────────────────────────────────────────────────────────
 MAX_LAPS             = 3
-MIN_LAPS_FOR_PARKING = 1
+MIN_LAPS_FOR_PARKING = 3
 
 # ── Sign Avoidance Tuning ────────────────────────────────────────────────────
 SIGN_STEER_OFFSET       = 25.0
@@ -177,10 +114,32 @@ SIGN_MIN_BOX_WIDTH      = 20
 SIGN_APPROACH_SPEED     = 55
 SIGN_CLEAR_FRAMES       = 8
 
+# ── Pillar Pipeline Tuning ───────────────────────────────────────────────────
+MAX_COLOR_SLOTS_PER_CAMERA  = 2       # Max green/red detections kept per camera
+CAMERA_FOV_DEG              = 60
+CAMERA_OUTWARD_ANGLE_DEG    = 15
+LENS_SPACING_MM             = 59
+PILLAR_STEER_MAX_ANGLE      = 30.0    # Max proportional steer from pillar offset
+PILLAR_STEER_GAIN           = 0.8     # Pixels → degrees proportional gain
+STRICT_CAMERA_SIDE_RULE     = True
+INNER_ZONE_HALF_WIDTH       = 40
+HALFWAY_RATIO               = 0.25    # fraction of half-frame from center
+GREEN_HOLD_S                = 0.12    # seconds to hold straight while waiting
+GREEN_SHARPEN               = 1.15
+RED_SHARPEN                 = 1.10
+PRIMARY_CAMERA_HOLD_S       = 0.10
+IMMEDIATE_COLLISION_AREA    = 8000
+MAX_AVOID_ANGLE             = 45       # degrees max gyro offset for avoidance
+STRAIGHTEN_AFTER_EXIT_S     = 0.5      # straighten wheels after pillar exits corresponding camera
+DETECTION_DEBOUNCE_S        = 0.15    # 150 ms debounce window
+HUSKYLENS_CENTER_X          = 160     # Pixel center of the 320px-wide HuskyLens frame
+CENTER_EPSILON_NORM         = 0.15    # normalized offset threshold for "near center"
+SIZE_EPSILON                = 100     # Area tie-breaker threshold
+
 # ── Parking Tuning ───────────────────────────────────────────────────────────
-PARKING_APPROACH_SPEED    = 45
-PARKING_REVERSE_SPEED     = 50
-PARKING_TURN_IN_SPEED     = 50
+PARKING_APPROACH_SPEED    = 25
+PARKING_REVERSE_SPEED     = 20
+PARKING_TURN_IN_SPEED     = 20
 PARKING_TURN_IN_ANGLE     = 40
 PARKING_STRAIGHTEN_ANGLE  = -35
 
@@ -422,6 +381,15 @@ class Detection:
     y: int = 0
     width: int = 0
     height: int = 0
+    cam: str = ""
+
+@dataclass
+class PillarContext:
+    """Result of the pillar detection pipeline for one control loop frame."""
+    closest_pillar: Optional[Detection]   # Highest-priority green/red pillar
+    all_color_dets: List[Detection]        # All kept green/red across cameras
+    magenta_dets: List[Detection]          # All magenta (uncapped)
+    primary_camera: Optional[str]          # "left" / "right" / None
 
 class HuskyLensWrapper:
     def __init__(self, name: str, port: str, baud: int = 9600):
@@ -458,6 +426,7 @@ class HuskyLensWrapper:
                         y=getattr(det, "y", 0),
                         width=getattr(det, "width", 0),
                         height=getattr(det, "height", 0),
+                        cam=self.name
                     ))
             return dets
         except Exception:
@@ -478,18 +447,131 @@ def build_rotation_array_cw(offset=ARRAY_OFFSET) -> list[float]:
 def build_rotation_array_ccw(offset=ARRAY_OFFSET) -> list[float]:
     return [0 + offset, 90 + offset, 180 + offset, -90 + offset]
 
-def fuse_forward_detections(left_dets: List[Detection], right_dets: List[Detection]) -> Dict[str, Optional[Detection]]:
-    all_dets = left_dets + right_dets
-    def _largest(target_id: int) -> Optional[Detection]:
-        matches = [d for d in all_dets if d.ID == target_id and d.width >= SIGN_MIN_BOX_WIDTH]
-        if not matches: return None
-        return max(matches, key=lambda d: d.width * d.height)
+def _det_area(d: Detection) -> int:
+    """Bounding-box area used as proximity metric (larger = closer)."""
+    return d.width * d.height
 
+def _det_center_dist(d: Detection) -> float:
+    """Horizontal distance from HuskyLens frame center (lower = more centered)."""
+    return abs(d.x - HUSKYLENS_CENTER_X)
+
+def _det_sort_key(d: Detection):
+    """Sort key: area descending (negate), then center-dist ascending."""
+    return (-_det_area(d), _det_center_dist(d))
+
+def filter_and_cap(raw_dets: List[Detection]) -> Dict[str, List[Detection]]:
+    """
+    Per-camera filtering:
+    - Separates magenta (ID3) — no cap.
+    - Keeps top MAX_COLOR_SLOTS_PER_CAMERA green/red (ID1/ID2) by area,
+      filtered by SIGN_MIN_BOX_WIDTH minimum.
+    """
+    magenta = [d for d in raw_dets if d.ID == HL_FWD_PURPLE_ID]
+    color   = [d for d in raw_dets
+               if d.ID in (HL_FWD_GREEN_ID, HL_FWD_RED_ID) and d.width >= SIGN_MIN_BOX_WIDTH]
+    color.sort(key=_det_sort_key)
     return {
-        "green":  _largest(HL_FWD_GREEN_ID),
-        "red":    _largest(HL_FWD_RED_ID),
-        "purple": _largest(HL_FWD_PURPLE_ID),
+        "color":   color[:MAX_COLOR_SLOTS_PER_CAMERA],
+        "magenta": magenta,
     }
+
+def build_pillar_context(
+    left_raw: List[Detection],
+    right_raw: List[Detection],
+    is_manual_turn: bool,
+    turn_direction: Optional[str],   # "left" or "right" or None
+) -> PillarContext:
+    """
+    Full pillar detection pipeline for one control-loop frame.
+
+    - Filters and caps each camera independently.
+    - During manual turns, only the primary camera's color detections are used.
+    - Outside manual turns, both cameras' detections are merged.
+    - Returns a PillarContext with the closest pillar and all relevant detections.
+    """
+    left_f  = filter_and_cap(left_raw)
+    right_f = filter_and_cap(right_raw)
+
+    # Magenta is always merged from both cameras regardless of mode
+    all_magenta = left_f["magenta"] + right_f["magenta"]
+
+    primary_camera: Optional[str] = None
+
+    def apply_zone_filter(dets: List[Detection], cam: str) -> List[Detection]:
+        if not STRICT_CAMERA_SIDE_RULE:
+            return dets
+        allowed = []
+        for d in dets:
+            if cam == "left" and d.ID == HL_FWD_RED_ID:
+                if d.x < HUSKYLENS_CENTER_X - INNER_ZONE_HALF_WIDTH:
+                    continue  # Ignore red in outer-left band
+            if cam == "right" and d.ID == HL_FWD_GREEN_ID:
+                if d.x > HUSKYLENS_CENTER_X + INNER_ZONE_HALF_WIDTH:
+                    continue  # Ignore green in outer-right band
+            allowed.append(d)
+        return allowed
+
+    left_allowed = apply_zone_filter(left_f["color"], "left")
+    right_allowed = apply_zone_filter(right_f["color"], "right")
+
+    if is_manual_turn and turn_direction is not None:
+        # Anticlockwise (left turn) → left camera primary
+        # Clockwise (right turn)    → right camera primary
+        if turn_direction == "left":
+            primary_camera = "left"
+            color_dets = list(left_allowed)
+        else:
+            primary_camera = "right"
+            color_dets = list(right_allowed)
+    else:
+        # Normal driving: merge both cameras' capped color detections
+        color_dets = left_allowed + right_allowed
+
+    # Sort merged list: closer (larger area) first, center-proximity as tiebreak
+    color_dets.sort(key=_det_sort_key)
+
+    closest = color_dets[0] if color_dets else None
+
+    return PillarContext(
+        closest_pillar=closest,
+        all_color_dets=color_dets,
+        magenta_dets=all_magenta,
+        primary_camera=primary_camera,
+    )
+
+def compute_pillar_steer(
+    pillar: Detection,
+    base_heading: float,
+    yaw: float,
+) -> float:
+    """
+    Compute proportional steering angle to avoid a pillar.
+
+    Green (ID1) → steer LEFT  (positive heading offset → negative wheel angle)
+    Red   (ID2) → steer RIGHT (negative heading offset → positive wheel angle)
+
+    Returns a steering angle in the range [-PILLAR_STEER_MAX_ANGLE, +PILLAR_STEER_MAX_ANGLE].
+    """
+    horiz_offset = pillar.x - HUSKYLENS_CENTER_X  # positive = pillar is right of center
+
+    if pillar.ID == HL_FWD_GREEN_ID:
+        # Go LEFT of the pillar: steer left (negative angle)
+        raw = -PILLAR_STEER_GAIN * abs(horiz_offset)
+        # If pillar is left of center, steer harder left; if right, less correction needed
+        if horiz_offset < 0:
+            raw = -PILLAR_STEER_GAIN * (abs(horiz_offset) + 20)  # extra push
+        else:
+            raw = -PILLAR_STEER_GAIN * max(10, abs(horiz_offset) - 10)
+    elif pillar.ID == HL_FWD_RED_ID:
+        # Go RIGHT of the pillar: steer right (positive angle)
+        if horiz_offset > 0:
+            raw = PILLAR_STEER_GAIN * (abs(horiz_offset) + 20)   # extra push
+        else:
+            raw = PILLAR_STEER_GAIN * max(10, abs(horiz_offset) - 10)
+    else:
+        return 0.0
+
+    return max(-PILLAR_STEER_MAX_ANGLE, min(PILLAR_STEER_MAX_ANGLE, raw))
 
 # =============================================================================
 # 7. STATE MACHINES (Parking & Navigation)
@@ -620,10 +702,58 @@ class Navigator:
         self.parking_controller = ParkingController()
         self.frame_count = 0
 
+        # Pillar detection debounce state
+        self._pillar_debounce_id: Optional[int] = None     # Last consistent pillar ID
+        self._pillar_debounce_time: float = 0.0             # When that ID was first seen
+        self._straight_until: float = 0.0                   # Go-straight override timestamp
+        
+        self.green_hold_start_time: float = 0.0
+        self.red_hold_start_time: float = 0.0
+
+        # Avoidance lifecycle state
+        self._avoidance_target_angle: float = 0.0        # Gyro heading target during avoidance
+        self._avoidance_entry_yaw: float = 0.0            # Yaw when avoidance started
+        self._pillar_exit_time: float = 0.0               # When pillar exited corresponding camera
+        self._pillar_exited: bool = False                  # Whether pillar has exited corresponding camera
+
+    def _get_sharpened_steer(self, p: Detection, yaw: float, is_emergency: bool = False) -> float:
+        """Compute sharpened steering: hold-then-turn for green, immediate for red.
+        Returns a clamped steering angle in [-MAX_AVOID_ANGLE, +MAX_AVOID_ANGLE]."""
+        now = time.time()
+        offset_norm = (p.x - HUSKYLENS_CENTER_X) / (320.0 / 2)
+        
+        if p.ID == HL_FWD_GREEN_ID:
+            halfway_x = HUSKYLENS_CENTER_X + (320.0 / 2) * HALFWAY_RATIO
+            is_holding = p.x < halfway_x and abs(offset_norm) < CENTER_EPSILON_NORM
+            
+            if is_holding and not is_emergency:
+                if self.green_hold_start_time == 0.0:
+                    self.green_hold_start_time = now
+                if now - self.green_hold_start_time > GREEN_HOLD_S:
+                    self.green_hold_start_time = 0.0
+                    steer = compute_pillar_steer(p, self.rotation_array[self.current_index], yaw) * GREEN_SHARPEN
+                else:
+                    steer = 0.0
+            else:
+                self.green_hold_start_time = 0.0
+                steer = compute_pillar_steer(p, self.rotation_array[self.current_index], yaw) * GREEN_SHARPEN
+                
+            return max(-MAX_AVOID_ANGLE, min(MAX_AVOID_ANGLE, steer))
+            
+        elif p.ID == HL_FWD_RED_ID:
+            # Red is immediate-sharpen without hold
+            steer = compute_pillar_steer(p, self.rotation_array[self.current_index], yaw) * RED_SHARPEN
+            return max(-MAX_AVOID_ANGLE, min(MAX_AVOID_ANGLE, steer))
+            
+        return 0.0
+
     def step(self, yaw: float, down_dets: List[Detection], left_fwd_dets: List[Detection], right_fwd_dets: List[Detection]) -> NavCommand:
         self.frame_count += 1
 
-        fused = fuse_forward_detections(left_fwd_dets, right_fwd_dets)
+        # ── Pillar detection pipeline ──
+        is_in_manual_turn = self.state in (NavState.MANUAL_TURN_SETTLE, NavState.MANUAL_TURN_PULSE, NavState.EXIT_BURST)
+        turn_dir = self.manual_turn_direction  # "left" / "right" / None
+        pillar_ctx = build_pillar_context(left_fwd_dets, right_fwd_dets, is_in_manual_turn, turn_dir)
         has_down_blue = any(d.ID == HL_DOWN_BLUE_ID for d in down_dets)
         has_down_orange = any(d.ID == HL_DOWN_ORANGE_ID for d in down_dets)
 
@@ -664,24 +794,55 @@ class Navigator:
         # 2. STRAIGHT DRIVING
         # =========================================================================
         if self.state == NavState.STRAIGHT_DRIVING:
-            if fused["green"]:
-                self._sign_confirm_counter += 1
-                if self._sign_confirm_counter >= SIGN_CONFIRM_REQUIRED:
-                    self.state = NavState.SIGN_AVOIDANCE
-                    self._sign_type = "green"
-                    self._sign_confirm_counter = 0
-                    print("GREEN pillar confirmed — SIGN_AVOIDANCE (keep LEFT)")
-                    return NavCommand(max(-60, min(60, -normalize_angle_error(self.rotation_array[self.current_index] + SIGN_STEER_OFFSET, yaw))), SIGN_APPROACH_SPEED)
-            elif fused["red"]:
-                self._sign_confirm_counter += 1
-                if self._sign_confirm_counter >= SIGN_CONFIRM_REQUIRED:
-                    self.state = NavState.SIGN_AVOIDANCE
-                    self._sign_type = "red"
-                    self._sign_confirm_counter = 0
-                    print("RED pillar confirmed — SIGN_AVOIDANCE (keep RIGHT)")
-                    return NavCommand(max(-60, min(60, -normalize_angle_error(self.rotation_array[self.current_index] - SIGN_STEER_OFFSET, yaw))), SIGN_APPROACH_SPEED)
+            # ── Pillar detection with debounce ──
+            p = pillar_ctx.closest_pillar
+            if p is not None:
+                now = time.time()
+                area = _det_area(p)
+                # Debounce: track consistent detections
+                if p.ID == self._pillar_debounce_id:
+                    elapsed_db = now - self._pillar_debounce_time
+                else:
+                    # New pillar ID — reset debounce timer
+                    self._pillar_debounce_id = p.ID
+                    self._pillar_debounce_time = now
+                    elapsed_db = 0.0
+
+                # Commit to avoidance if debounce passed OR immediate collision risk
+                debounce_ok = elapsed_db >= DETECTION_DEBOUNCE_S
+                collision_risk = area > IMMEDIATE_COLLISION_AREA
+                if debounce_ok or collision_risk:
+                    self._sign_confirm_counter += 1
+                    if self._sign_confirm_counter >= SIGN_CONFIRM_REQUIRED:
+                        if p.ID == HL_FWD_GREEN_ID:
+                            self.state = NavState.SIGN_AVOIDANCE
+                            self._sign_type = "green"
+                            self._sign_confirm_counter = 0
+                            self._pillar_debounce_id = None
+                            self._avoidance_entry_yaw = yaw
+                            self._pillar_exited = False
+                            self._pillar_exit_time = 0.0
+                            steer = self._get_sharpened_steer(p, yaw, is_emergency=collision_risk)
+                            self._avoidance_target_angle = max(yaw - MAX_AVOID_ANGLE, min(yaw + MAX_AVOID_ANGLE, yaw + steer))
+                            print(f"GREEN pillar confirmed — SIGN_AVOIDANCE (keep LEFT, steer={steer:.1f}°, target={self._avoidance_target_angle:.1f}°)")
+                            return NavCommand(steer, SIGN_APPROACH_SPEED)
+                        elif p.ID == HL_FWD_RED_ID:
+                            self.state = NavState.SIGN_AVOIDANCE
+                            self._sign_type = "red"
+                            self._sign_confirm_counter = 0
+                            self._pillar_debounce_id = None
+                            self._avoidance_entry_yaw = yaw
+                            self._pillar_exited = False
+                            self._pillar_exit_time = 0.0
+                            steer = self._get_sharpened_steer(p, yaw, is_emergency=collision_risk)
+                            self._avoidance_target_angle = max(yaw - MAX_AVOID_ANGLE, min(yaw + MAX_AVOID_ANGLE, yaw + steer))
+                            print(f"RED pillar confirmed — SIGN_AVOIDANCE (keep RIGHT, steer={steer:.1f}°, target={self._avoidance_target_angle:.1f}°)")
+                            return NavCommand(steer, SIGN_APPROACH_SPEED)
+                else:
+                    pass  # Still debouncing — don't increment confirm counter yet
             else:
                 self._sign_confirm_counter = 0
+                self._pillar_debounce_id = None
 
             if not is_orientation_color and not is_opposite_color:
                 self.last_color_detected = None
@@ -727,17 +888,62 @@ class Navigator:
         # 3. SIGN AVOIDANCE
         # =========================================================================
         if self.state == NavState.SIGN_AVOIDANCE:
-            if (self._sign_type == "green" and fused["green"]) or (self._sign_type == "red" and fused["red"]):
-                self._sign_clear_counter = 0
+            now = time.time()
+            p = pillar_ctx.closest_pillar
+
+            # Check if the pillar we're avoiding is still visible on ANY camera
+            pillar_still_visible = (p is not None and
+                ((self._sign_type == "green" and p.ID == HL_FWD_GREEN_ID) or
+                 (self._sign_type == "red"   and p.ID == HL_FWD_RED_ID)))
+
+            # Check if the pillar has exited the CORRESPONDING side camera:
+            #   Green avoidance → pillar should eventually exit the RIGHT camera
+            #   Red avoidance   → pillar should eventually exit the LEFT camera
+            if self._sign_type == "green":
+                corresponding_has_pillar = any(d.ID == HL_FWD_GREEN_ID for d in right_fwd_dets)
             else:
-                self._sign_clear_counter += 1
+                corresponding_has_pillar = any(d.ID == HL_FWD_RED_ID for d in left_fwd_dets)
+
+            if not self._pillar_exited:
+                if not pillar_still_visible and not corresponding_has_pillar:
+                    # Pillar no longer visible on any camera → mark as exited
+                    self._pillar_exited = True
+                    self._pillar_exit_time = now
+                    print(f"  Pillar exited corresponding camera — straightening in {STRAIGHTEN_AFTER_EXIT_S}s")
             
-            if self._sign_clear_counter >= SIGN_CLEAR_FRAMES:
-                self.state = NavState.STRAIGHT_DRIVING
-                return NavCommand(max(-60, min(60, -normalize_angle_error(self.rotation_array[self.current_index], yaw))), NORMAL_SPEED)
+            # Once exited, wait STRAIGHTEN_AFTER_EXIT_S then return to straight driving
+            if self._pillar_exited:
+                if now - self._pillar_exit_time >= STRAIGHTEN_AFTER_EXIT_S:
+                    self.state = NavState.STRAIGHT_DRIVING
+                    self._straight_until = 0.0
+                    self._pillar_exited = False
+                    self.green_hold_start_time = 0.0
+                    print(f"  Avoidance complete — STRAIGHT_DRIVING")
+                    return NavCommand(max(-60, min(60, -normalize_angle_error(self.rotation_array[self.current_index], yaw))), NORMAL_SPEED)
+                else:
+                    # Hold the avoidance heading during the exit delay
+                    steer = max(-MAX_AVOID_ANGLE, min(MAX_AVOID_ANGLE,
+                                -normalize_angle_error(self._avoidance_target_angle, yaw)))
+                    return NavCommand(steer, SIGN_APPROACH_SPEED)
             
-            target = self.rotation_array[self.current_index] + (-SIGN_STEER_OFFSET if self._sign_type == "red" else SIGN_STEER_OFFSET)
-            return NavCommand(max(-60, min(60, -normalize_angle_error(target, yaw))), SIGN_APPROACH_SPEED)
+            # Pillar is still visible — continue avoidance with proportional steer
+            if pillar_still_visible:
+                is_emergency = _det_area(p) >= IMMEDIATE_COLLISION_AREA
+                steer = self._get_sharpened_steer(p, yaw, is_emergency=is_emergency)
+                # Clamp gyro offset to ±MAX_AVOID_ANGLE from entry yaw
+                clamped_target = max(self._avoidance_entry_yaw - MAX_AVOID_ANGLE,
+                                     min(self._avoidance_entry_yaw + MAX_AVOID_ANGLE,
+                                         yaw + steer))
+                self._avoidance_target_angle = clamped_target
+                steer_cmd = max(-MAX_AVOID_ANGLE, min(MAX_AVOID_ANGLE,
+                                -normalize_angle_error(clamped_target, yaw)))
+                return NavCommand(steer_cmd, SIGN_APPROACH_SPEED)
+            else:
+                # Pillar lost from main view but not yet from corresponding camera
+                # — hold last avoidance heading
+                steer = max(-MAX_AVOID_ANGLE, min(MAX_AVOID_ANGLE,
+                            -normalize_angle_error(self._avoidance_target_angle, yaw)))
+                return NavCommand(steer, SIGN_APPROACH_SPEED)
 
         # =========================================================================
         # 4. MANUAL TURN SETTLE
@@ -750,6 +956,14 @@ class Navigator:
             
             self.manual_turn_frames += 1
             raw_angle = self._compute_turn_angle(yaw)
+
+            # Blend pillar avoidance from primary camera during turn
+            p = pillar_ctx.closest_pillar
+            if p is not None:
+                is_emergency = _det_area(p) >= IMMEDIATE_COLLISION_AREA
+                pillar_blend = self._get_sharpened_steer(p, yaw, is_emergency=is_emergency)
+                raw_angle = max(-60, min(60, raw_angle + pillar_blend * 0.5))  # 50% blend
+
             if self.manual_turn_frames <= TURN_SETTLE_FRAMES:
                 return NavCommand(raw_angle, TURN_CRAWL_SPEED, full_range=True)
             return NavCommand(raw_angle, TURN_SPEED, full_range=True)
@@ -760,6 +974,14 @@ class Navigator:
         if self.state == NavState.MANUAL_TURN_PULSE:
             self.manual_turn_pulse_frames += 1
             raw_angle = self._compute_turn_angle(yaw)
+
+            # Blend pillar avoidance from primary camera during turn
+            p = pillar_ctx.closest_pillar
+            if p is not None:
+                is_emergency = _det_area(p) >= IMMEDIATE_COLLISION_AREA
+                pillar_blend = self._get_sharpened_steer(p, yaw, is_emergency=is_emergency)
+                raw_angle = max(-60, min(60, raw_angle + pillar_blend * 0.5))  # 50% blend
+
             if self.manual_turn_pulse_frames >= 8:
                 self.state = NavState.EXIT_BURST
                 self.exit_burst_frames = EXIT_BURST_FRAMES
@@ -781,7 +1003,8 @@ class Navigator:
         # 7. POST SEQUENCE
         # =========================================================================
         if self.state == NavState.POST_SEQUENCE:
-            if fused.get("purple") or any(d.ID == HL_FWD_PURPLE_ID for d in down_dets):
+            has_magenta = len(pillar_ctx.magenta_dets) > 0 or any(d.ID == HL_FWD_PURPLE_ID for d in down_dets)
+            if has_magenta:
                 if self.lap_count >= MIN_LAPS_FOR_PARKING:
                     self.state = NavState.PARKING
                     self.parking_controller.start()
@@ -796,7 +1019,8 @@ class Navigator:
         # 8. PARKING
         # =========================================================================
         if self.state == NavState.PARKING:
-            cmd = self.parking_controller.step(yaw, fused.get("purple"))
+            closest_magenta = pillar_ctx.magenta_dets[0] if pillar_ctx.magenta_dets else None
+            cmd = self.parking_controller.step(yaw, closest_magenta)
             if self.parking_controller.state == ParkingState.DONE:
                 self.state = NavState.STOPPED
                 return NavCommand(0, 0, brake=True)

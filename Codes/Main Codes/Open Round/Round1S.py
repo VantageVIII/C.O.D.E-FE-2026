@@ -1,3 +1,5 @@
+#/usr/bin/python3
+
 import Hobot.GPIO as GPIO
 import time
 import serial
@@ -10,6 +12,7 @@ from huskylib import HuskyLensLibrary
 # Primary HuskyLens on serial port 2
 try:
     hl = HuskyLensLibrary("SERIAL", "/dev/ttyS2", 9600)
+    # RESTORED: Deliberate typo because the HuskyLens library spells it this way!
     hl.algorthim("ALGORITHM_COLOR_RECOGNITION")
     print("HuskyLens initialized on /dev/ttyS2")
 except Exception as _e:
@@ -183,8 +186,6 @@ class GyroSensor:
                 elif self.yaw < -180:
                     self.yaw += 360
 
-
-
 # -----------------------------
 # Helpers
 # -----------------------------
@@ -200,65 +201,9 @@ def normalize_angle_error(target, current):
     return error
 
 # ------------------------------------------------------------------
-# Colour detection helpers — keeps all conditions in one place
-# ------------------------------------------------------------------
-def is_blue_line(r, g, b):
-    # Explicitly ignore pure-white and near-white sensor readings
-    if (r, g, b) == (255, 255, 255):
-        return False
-    if r >= 250 and g >= 250 and b >= 250:
-        return False
-
-    # New measured blue values: (51,77,111), (47,76,119), (85,120,129),
-    # (50,70,106), (51,80,119), (71,98,107), (161,189,151), (255,255,213),
-    # (56,67,95), (52,80,118), (56,83,121), (174,255,198), (255,255,178)
-    # Accept pale blue variants like (255,255,213) without mistaking them for white.
-    if b >= 120 and b > r and (b >= g + 10 or abs(b - g) <= 35) and r <= 120 and g <= 210:
-        return True
-
-    # Washed / bright blue readings still retain a strong blue channel and are
-    # not pure white or near-white.
-    if (b >= 170 and b < 250 and r >= 180 and g >= 150 and abs(r - g) <= 60 and b > r + 10):
-        return True
-
-    # Additional measured blue readings, including washed / pale variants that
-    # sit very close to white but still retain a distinct blue lift.
-    if (r, g, b) in {(50, 70, 106), (51, 80, 119), (71, 98, 107), (161, 189, 151), (255, 255, 213),
-                     (56, 67, 95), (52, 80, 118), (56, 83, 121), (174, 255, 198), (255, 255, 178)}:
-        return True
-
-    return False
-
-def is_orange_line(r, g, b):
-    # Explicitly ignore pure-white and near-white sensor readings
-    if (r, g, b) == (255, 255, 255):
-        return False
-    if r >= 250 and g >= 250 and b >= 250:
-        return False
-
-    # New measured orange values: (255,245,147), (233,132,65), (255,145,67),
-    # (255,223,119), (255,255,133), (255,172,74), (235,130,67), (255,231,138),
-    # (255,227,125), (255,144,70), (227,126,61), (255,168,113).
-    # These are red-dominant and not white.
-    if r >= 200 and r > b and (r >= g + 10 or abs(r - g) <= 35) and g <= 210 and b <= 180:
-        return True
-
-    # Keep brighter / paler orange variants recognised, while still rejecting white.
-    if r >= 230 and g >= 140 and b <= 170 and r > b and (r >= g + 5 or abs(r - g) <= 35):
-        return True
-
-    # Additional measured orange readings, including very bright washed variants
-    # that remain visibly orange rather than white.
-    if (r, g, b) in {(255, 255, 133), (255, 172, 74), (235, 130, 67), (255, 231, 138),
-                     (255, 227, 125), (255, 144, 70), (227, 126, 61), (255, 168, 113)}:
-        return True
-
-    return False
-
-# ------------------------------------------------------------------
 # Tuning constants — only touch these to adjust behaviour
 # ------------------------------------------------------------------
-NORMAL_SPEED       = 85    # motor duty cycle during straight driving
+NORMAL_SPEED       = 75    # motor duty cycle during straight driving
 CORRECTION_SPEED   = 60    # motor duty cycle during heading correction
 TURN_SPEED         = 70    # motor duty cycle during the main turn phase
 TURN_CRAWL_SPEED   = 65    # motor duty cycle during settle phase (barely rolling)
@@ -270,11 +215,8 @@ EXIT_BURST_FRAMES  = 10    # number of frames the burst lasts (doubled for longe
 POST_SEQUENCE_REVERSE_RATIO = 0.55
 POST_SEQUENCE_NEUTRAL_ANGLE = 0
 TURN_ENTRY_DELAY = 0.15   # delay after a gate is seen before manual turn starts
-TURN_EXIT_DELAY  = TURN_ENTRY_DELAY - 0.1   # delay after the turn pulse ends before exiting turn mode
+TURN_EXIT_DELAY  = 0   # delay after the turn pulse ends before exiting turn mode
 
-# Extend servo range slightly beyond the standard 1.0–2.0 ms spec for
-# maximum physical deflection.  If the servo grunts or buzzes at the
-# extremes, change these back to 1.0 and 2.0.
 SERVO_TURN_MIN_MS  = 0.9
 SERVO_TURN_MAX_MS  = 2.1
 
@@ -376,12 +318,8 @@ while GPIO.input(ButtonPin) == GPIO.LOW:
 
 print("Button pressed — starting up...")
 
-# Centre the servo at neutral BEFORE starting its thread so the wheels
-# do not twitch to one side on power-up.
 Movement.set_steering_angle(0)
 Movement.start_servo()
-
-# Start the motor bit-bang thread (motor is idle until set_motor_forward is called)
 Movement.start_motor()
 
 print("Calibrating gyro...")
@@ -395,7 +333,6 @@ frame_count = 0
 while True:
     gyro.update()
 
-    # HuskyLens detection block replaces colour-sensor reads
     husky_detections = []
     if hl is not None:
         try:
@@ -424,7 +361,7 @@ while True:
                 orientation_colour = "orange"
                 print("\nClockwise rotation sequence selected (HuskyLens)")
             elif any(d.ID == HUSKYLENS_BLUE_ID for d in husky_detections):
-                rotation_array = [0 + arrayOffset, 90 + arrayOffset, 180 + arrayOffset, -90 + arrayOffset]
+                rotation_array = [0 - arrayOffset, 90 - arrayOffset, 180 - arrayOffset, -90 - arrayOffset]
                 orientation_colour = "blue"
                 print("\nCounterclockwise rotation sequence selected (HuskyLens)")
 
@@ -442,8 +379,6 @@ while True:
     frame_count += 1
 
     # ── Reset colour tracking on non-colour frames ───────────────────────────
-    # Prevents a single noisy reading on white from permanently locking
-    # last_color_detected and blocking all future colour triggers.
     if is_white_reading or (not is_orientation_color and not is_opposite_color):
         last_color_detected = None
 
@@ -457,16 +392,8 @@ while True:
 
         error = normalize_angle_error(manual_turn_steer_target, gyro.yaw)
 
-        # Lock servo to full deflection on every turn frame.
-        # Set this BEFORE the speed decision so the servo starts
-        # moving toward the endpoint as early as possible.
         raw_angle = -TURN_MAX_ANGLE if error > 0 else TURN_MAX_ANGLE
 
-        # Direction lock: keep the servo within the half-range that matches
-        # the direction captured at turn entry.  Prevents the servo crossing
-        # centre if the gyro error briefly flips sign mid-corner.
-        #   "left"  → allowed range [-TURN_MAX_ANGLE,  0]
-        #   "right" → allowed range [0,  TURN_MAX_ANGLE]
         if manual_turn_direction == "left":
             raw_angle = max(-TURN_MAX_ANGLE, min(0, raw_angle))
         else:  # "right"
@@ -474,7 +401,6 @@ while True:
         Movement.set_steering_angle(raw_angle, max_angle=TURN_MAX_ANGLE, full_range=True)
 
         if manual_turn_pulse_mode:
-            # ── Pulse phase: full lock, drive, exit after 8 frames ──────────
             manual_turn_pulse_frames += 1
             Movement.set_motor_forward(TURN_SPEED)
 
@@ -489,8 +415,6 @@ while True:
                 print(f"\nPulse complete — advancing to index {current_index}.  "
                       f"Current angle: {gyro.yaw:.2f}°  "
                       f"Burst: {exit_burst_frames} frames at {EXIT_BURST_POWER}%")
-                # Start timing the "first side" when the first manual turn completes.
-                # Only start once for the whole run.
                 if (not FIRST_SIDE_MEASURED) and (FIRST_SIDE_START_TIME is None) and lap_count == 0:
                     FIRST_SIDE_START_TIME = time.time()
                     print(f"Started FIRST_SIDE timing at {FIRST_SIDE_START_TIME:.2f}")
@@ -498,16 +422,11 @@ while True:
             manual_turn_frames += 1
 
             if manual_turn_frames <= TURN_SETTLE_FRAMES:
-                # ── Settle phase ─────────────────────────────────────────────
-                # Servo is already commanding full lock (set above).
-                # Crawl slowly so the wheels physically reach their endpoint
-                # before the car builds speed into the corner.
                 Movement.set_motor_forward(TURN_CRAWL_SPEED)
                 print(f"TURN SETTLE  frame={manual_turn_frames}/{TURN_SETTLE_FRAMES} | "
                       f"Target={manual_turn_target}° | Yaw={gyro.yaw:.2f}° | "
                       f"Pulse={Movement.pulse_ms:.3f} ms | RGB={r,g,b}")
             else:
-                # ── Full turn phase ───────────────────────────────────────────
                 Movement.set_motor_forward(TURN_SPEED)
                 print(f"MANUAL TURN  Target={manual_turn_target}° | Yaw={gyro.yaw:.2f}° | "
                       f"Error={error:.2f}° | Angle={raw_angle:.0f}° | "
@@ -523,27 +442,24 @@ while True:
             manual_turn_pulse_frames = 0
             correction_mode          = False
             manual_turn_start_angle  = gyro.yaw
-            # Overshoot 50° in the direction of the next heading in the sequence.
+            
+            # --- TURN TARGET MATH FIX (CORRECTION MODE) ---
             if current_index + 1 < len(rotation_array):
                 _next_hdg = rotation_array[current_index + 1]
             else:
                 _next_hdg = rotation_array[0]
-            if orientation_colour == "blue":
-                # Anticlockwise path: blue is the entrance gate, so it should stay left.
-                if _next_hdg >= rotation_array[current_index]:
-                    manual_turn_target = rotation_array[current_index] - 50
-                else:
-                    manual_turn_target = rotation_array[current_index] + 50
+                
+            _turn_diff = normalize_angle_error(_next_hdg, rotation_array[current_index])
+            if _turn_diff > 0:
+                manual_turn_target = rotation_array[current_index] + 50
             else:
-                if _next_hdg >= rotation_array[current_index]:
-                    manual_turn_target = rotation_array[current_index] + 50
-                else:
-                    manual_turn_target = rotation_array[current_index] - 50
+                manual_turn_target = rotation_array[current_index] - 50
 
             last_color_detected = "orientation"
             print(f"\nOrientation colour during correction — entering manual turn.  "
                   f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}° "
                   f"(next heading = {_next_hdg}°)")
+                  
             # Lock the direction now so it can't flip mid-turn
             if current_index == 0:
                 manual_turn_steer_target = manual_turn_target
@@ -551,11 +467,10 @@ while True:
             else:
                 manual_turn_steer_target = _next_hdg
                 _init_err = normalize_angle_error(_next_hdg, gyro.yaw)
-            if orientation_colour == "blue":
-                manual_turn_direction = "left"
-            else:
-                manual_turn_direction = "left" if _init_err > 0 else "right"
+                
+            manual_turn_direction = "left" if _init_err > 0 else "right"
             print(f"Turn direction locked: {manual_turn_direction}")
+            # ----------------------------------------------
         else:
             error     = normalize_angle_error(correction_target, gyro.yaw)
             raw_angle = max(-55, min(55, -error))
@@ -568,59 +483,6 @@ while True:
             if correction_frames <= 0:
                 correction_mode = False
                 print("\nCorrection complete — returning to normal mode")
-
-    # ── Post-sequence mode ──────────────────────────────────────────────────
-    elif post_sequence_mode:
-        if forward_start_time is None:
-            forward_start_time = time.time()
-            Movement.set_steering_angle(POST_SEQUENCE_NEUTRAL_ANGLE)
-            Movement.set_motor_forward(NORMAL_SPEED)
-            Movement.start_servo()
-
-        # Drive straight forward using heading 0°
-        target_angle = 0
-        error = normalize_angle_error(target_angle, gyro.yaw)
-        raw_angle = max(-60, min(60, -error))
-        Movement.set_steering_angle(raw_angle)
-        Movement.set_motor_forward(NORMAL_SPEED)
-
-        # Stop when the same orientation colour is detected via HuskyLens IDs
-        if ((orientation_colour == "orange" and any(d.ID == HUSKYLENS_ORANGE_ID for d in husky_detections)) or
-            (orientation_colour == "blue"   and any(d.ID == HUSKYLENS_BLUE_ID for d in husky_detections))):
-
-            Movement.brake()
-            final_lock_angle = -TURN_MAX_ANGLE if orientation_colour == "orange" else TURN_MAX_ANGLE
-            Movement.set_steering_angle(final_lock_angle, max_angle=TURN_MAX_ANGLE, full_range=True)
-
-            if forward_start_time is None:
-                forward_start_time = time.time()
-                print("Warning: forward_start_time was None at post-sequence stop, using current time as fallback.")
-
-            forward_duration = time.time() - forward_start_time
-            if forward_duration < 0.05:
-                forward_duration = 0.05
-
-            reverse_duration = forward_duration * POST_SEQUENCE_REVERSE_RATIO
-            time.sleep(0.05)
-
-            GPIO.output(IN1, GPIO.HIGH)
-            GPIO.output(IN2, GPIO.LOW)
-            Movement.set_motor_forward(NORMAL_SPEED)
-
-            end_time = time.time() + reverse_duration
-            while time.time() < end_time:
-                time.sleep(0.01)
-
-            Movement.brake()
-            GPIO.output(IN1, GPIO.LOW)
-            GPIO.output(IN2, GPIO.HIGH)
-            Movement.set_motor_forward(0)
-
-            post_sequence_mode = False
-            forward_start_time = None
-            print(f"Final {orientation_colour} line detected — wheels locked {final_lock_angle:+.0f}°, "
-                f"forward {forward_duration:.2f}s, reversed {reverse_duration:.2f}s.")
-            break
 
     # ── Normal mode ───────────────────────────────────────────────────────────
     else:
@@ -642,40 +504,35 @@ while True:
                 manual_turn_pulse_mode   = False
                 manual_turn_pulse_frames = 0
                 manual_turn_start_angle  = gyro.yaw
-            # Overshoot 50° in the direction of the next heading in the sequence,
-            # so the car turns toward the next gate, not always the same direction.
-            if current_index + 1 < len(rotation_array):
-                _next_hdg = rotation_array[current_index + 1]
-            else:
-                _next_hdg = rotation_array[0]
-            if orientation_colour == "blue":
-                # Anticlockwise route: the blue gate is the entrance, so keep the turn left.
-                if _next_hdg >= rotation_array[current_index]:
-                    manual_turn_target = rotation_array[current_index] - 50
+                
+                # --- TURN TARGET MATH FIX (NORMAL MODE) ---
+                if current_index + 1 < len(rotation_array):
+                    _next_hdg = rotation_array[current_index + 1]
                 else:
-                    manual_turn_target = rotation_array[current_index] + 50
-            else:
-                if _next_hdg >= rotation_array[current_index]:
+                    _next_hdg = rotation_array[0]
+                    
+                _turn_diff = normalize_angle_error(_next_hdg, rotation_array[current_index])
+                if _turn_diff > 0:
                     manual_turn_target = rotation_array[current_index] + 50
                 else:
                     manual_turn_target = rotation_array[current_index] - 50
 
-            last_color_detected = "orientation"
-            print(f"\nOrientation colour detected — starting manual 50° turn.  "
-                  f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}° "
-                  f"(next heading = {_next_hdg}°)")
-            # Lock the direction now so it can't flip mid-turn
-            if current_index == 0:
-                manual_turn_steer_target = manual_turn_target
-                _init_err = normalize_angle_error(manual_turn_target, gyro.yaw)
-            else:
-                manual_turn_steer_target = _next_hdg
-                _init_err = normalize_angle_error(_next_hdg, gyro.yaw)
-            if orientation_colour == "blue":
-                manual_turn_direction = "left"
-            else:
+                last_color_detected = "orientation"
+                print(f"\nOrientation colour detected — starting manual 50° turn.  "
+                      f"Target: {rotation_array[current_index]}° → {manual_turn_target:.2f}° "
+                      f"(next heading = {_next_hdg}°)")
+                      
+                # Lock the direction now so it can't flip mid-turn
+                if current_index == 0:
+                    manual_turn_steer_target = manual_turn_target
+                    _init_err = normalize_angle_error(manual_turn_target, gyro.yaw)
+                else:
+                    manual_turn_steer_target = _next_hdg
+                    _init_err = normalize_angle_error(_next_hdg, gyro.yaw)
+                    
                 manual_turn_direction = "left" if _init_err > 0 else "right"
-            print(f"Turn direction locked: {manual_turn_direction}")
+                print(f"Turn direction locked: {manual_turn_direction}")
+                # ------------------------------------------
         else:
             # Straight driving with gyro correction
             target_angle = rotation_array[current_index]
@@ -685,8 +542,6 @@ while True:
             Movement.set_steering_angle(raw_angle)
 
             # ── Exit burst: brief high-power pulse after a turn ──────────────
-            # Gives the car momentum to overcome steering resistance when the
-            # front wheels are still at an angle from the corner exit.
             if exit_burst_frames > 0:
                 Movement.set_motor_forward(EXIT_BURST_POWER)
                 exit_burst_frames -= 1
@@ -700,11 +555,6 @@ while True:
                       f"RGB={r,g,b} | Lap={lap_count}")
 
             # ── Consecutive-frame colour counters ────────────────────────────────────
-            # Count how many frames in a row match each line colour.  A colour is only
-            # "confirmed" once its counter reaches its threshold.  Any frame that
-            # does not match a line colour resets BOTH counters, so white or noise can
-            # never accumulate toward the threshold.
-            # Using HuskyLens IDs instead of RGB sensor values keeps the rest of the state machine unchanged.
             if orientation_colour == "orange" and is_orientation_color:
                 orange_frames += 1
                 blue_frames    = 0
@@ -719,8 +569,6 @@ while True:
             blue_confirmed   = blue_frames   >= blue_confirm_threshold
 
             # ── Line cooldown reset ──────────────────────────────────────────────────
-            # Once the robot is off the line (no colour confirmed), clear the cooldown
-            # so the next line crossing is allowed to increment the index again.
             if not orange_confirmed and not blue_confirmed:
                 line_cooldown = False
 
@@ -731,33 +579,40 @@ while True:
                     last_color_detected = "orange"
                     advance_rotation_index()
                     print(f"\nOrange detected — moving to index {current_index}")
-                    # Debug print (commented) — uncomment for tuning
-                    # print(f"DEBUG raw={raw_r,raw_g,raw_b} ema={r,g,b} br={r+g+b} ratios={(r/(r+g+b), g/(r+g+b), b/(r+g+b))} orange_frames={orange_frames} idx={current_index}")
             elif orientation_colour == "blue" and is_orientation_color and last_color_detected != "blue":
                 if not line_cooldown and blue_confirmed:
                     line_cooldown = True
                     last_color_detected = "blue"
                     advance_rotation_index()
                     print(f"\nBlue detected — moving to index {current_index}")
-                    # Debug print (commented) — uncomment for tuning
-                    # print(f"DBG raw={raw_r,raw_g,raw_b} ema={r,g,b} br={r+g+b} ratios={(r/(r+g+b), g/(r+g+b), b/(r+g+b))} blue_frames={blue_frames} idx={current_index}")
 
+        # --- 0.55 END SEQUENCE FIX ---
         if lap_count >= max_laps:
-            forward_start_time = time.time()
-            post_sequence_mode = True
             print("\nSequence complete. Entering post-sequence forward mode...")
 
-            # If we successfully measured the first-side earlier, drive forward
-            # for half that duration immediately after the main laps.
-            if FIRST_SIDE_MEASURED and FIRST_SIDE_HALF is not None:
-                Movement.set_steering_angle(0)
+            if FIRST_SIDE_MEASURED and FIRST_SIDE_DURATION is not None:
+                post_duration = FIRST_SIDE_DURATION * 0.55
                 Movement.start_servo()
-                Movement.set_motor_forward(NORMAL_SPEED)
-                _end = time.time() + FIRST_SIDE_HALF
+                _end = time.time() + post_duration
                 while time.time() < _end:
+                    gyro.update()
+                    # Keep straight using heading 0°
+                    error = normalize_angle_error(0, gyro.yaw)
+                    raw_angle = max(-60, min(60, -error))
+                    Movement.set_steering_angle(raw_angle)
+                    Movement.set_motor_forward(NORMAL_SPEED)
                     time.sleep(0.01)
+                
                 Movement.brake()
                 Movement.set_motor_forward(0)
-                print(f"Post-laps forward for FIRST_SIDE_HALF={FIRST_SIDE_HALF:.2f}s complete")
+                print(f"Post-laps forward for {post_duration:.2f}s complete. Stopping.")
+            else:
+                Movement.brake()
+                Movement.set_motor_forward(0)
+                print("Sequence complete, stopping.")
+            
+            # Break safely out of the loop and end the script
+            break
+        # -----------------------------
 
     time.sleep(0.01)

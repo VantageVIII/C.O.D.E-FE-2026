@@ -1,3 +1,5 @@
+#/usr/bin/python3
+
 import Hobot.GPIO as GPIO
 import time
 import serial
@@ -7,11 +9,11 @@ import threading
 
 # HuskyLens colour recognition (primary colour sensor replacement)
 from huskylib import HuskyLensLibrary
-# Primary HuskyLens on serial port 3
+# Primary HuskyLens on serial port 2
 try:
-    hl = HuskyLensLibrary("SERIAL", "/dev/ttyS3", 9600)
+    hl = HuskyLensLibrary("SERIAL", "/dev/ttyS2", 9600)
     hl.algorthim("ALGORITHM_COLOR_RECOGNITION")
-    print("HuskyLens initialized on /dev/ttyS3")
+    print("HuskyLens initialized on /dev/ttyS2")
 except Exception as _e:
     hl = None
     print("HuskyLens init failed or not present:", _e)
@@ -24,12 +26,10 @@ GPIO.setmode(GPIO.BOARD)
 
 IN1 = 29
 IN2 = 31
-LEDPin = 37
 ServoPin = 32
 ENA = 33
 ButtonPin = 18
-GPIO.setup([IN1, IN2, LEDPin, ENA, ServoPin], GPIO.OUT)
-GPIO.output(LEDPin, GPIO.HIGH)
+GPIO.setup([IN1, IN2, ENA, ServoPin], GPIO.OUT)
 GPIO.setup(ButtonPin, GPIO.IN)
 
 # -----------------------------
@@ -185,41 +185,7 @@ class GyroSensor:
                 elif self.yaw < -180:
                     self.yaw += 360
 
-# -----------------------------
-# Colour Sensor Class
-# -----------------------------
-class ColorSensor:
-    def __init__(self, i2c_bus=0, addr=0x29):
-        self.bus = smbus2.SMBus(i2c_bus)
-        self.addr = addr
-        self.COMMAND_BIT = 0x80
-        self.CDATA = 0x14
-        self.bus.write_byte_data(self.addr, self.COMMAND_BIT | 0x00, 0x03)
-        self.bus.write_byte_data(self.addr, self.COMMAND_BIT | 0x01, 0xFF)
-        self.bus.write_byte_data(self.addr, self.COMMAND_BIT | 0x0F, 0x03)
-        time.sleep(0.7)
 
-    def read_word(self, reg):
-        low  = self.bus.read_byte_data(self.addr, self.COMMAND_BIT | reg)
-        high = self.bus.read_byte_data(self.addr, self.COMMAND_BIT | (reg + 1))
-        return (high << 8) | low
-
-    def get_rgb(self):
-        try:
-            c = self.read_word(self.CDATA)
-            r = self.read_word(self.CDATA + 2)
-            g = self.read_word(self.CDATA + 4)
-            b = self.read_word(self.CDATA + 6)
-        except OSError:
-            return (0, 0, 0)
-
-        if c == 0:
-            return (r, g, b)
-
-        r_std = int((r / c) * 255)
-        g_std = int((g / c) * 255)
-        b_std = int((b / c) * 255)
-        return (r_std, g_std, b_std)
 
 # -----------------------------
 # Helpers
@@ -294,7 +260,7 @@ def is_orange_line(r, g, b):
 # ------------------------------------------------------------------
 # Tuning constants — only touch these to adjust behaviour
 # ------------------------------------------------------------------
-NORMAL_SPEED       = 65    # motor duty cycle during straight driving
+NORMAL_SPEED       = 75    # motor duty cycle during straight driving
 CORRECTION_SPEED   = 60    # motor duty cycle during heading correction
 TURN_SPEED         = 70    # motor duty cycle during the main turn phase
 TURN_CRAWL_SPEED   = 65    # motor duty cycle during settle phase (barely rolling)
@@ -305,8 +271,8 @@ EXIT_BURST_POWER   = 100    # brief high-power pulse after exiting turn mode
 EXIT_BURST_FRAMES  = 10    # number of frames the burst lasts (doubled for longer momentum)
 POST_SEQUENCE_REVERSE_RATIO = 0.55
 POST_SEQUENCE_NEUTRAL_ANGLE = 0
-TURN_ENTRY_DELAY = 0.3   # delay after a gate is seen before manual turn starts
-TURN_EXIT_DELAY  = TURN_ENTRY_DELAY - 0.1   # delay after the turn pulse ends before exiting turn mode
+TURN_ENTRY_DELAY = 0.25   # delay after a gate is seen before manual turn starts
+TURN_EXIT_DELAY  = 0   # delay after the turn pulse ends before exiting turn mode
 
 # Extend servo range slightly beyond the standard 1.0–2.0 ms spec for
 # maximum physical deflection.  If the servo grunts or buzzes at the
@@ -314,29 +280,9 @@ TURN_EXIT_DELAY  = TURN_ENTRY_DELAY - 0.1   # delay after the turn pulse ends be
 SERVO_TURN_MIN_MS  = 0.9
 SERVO_TURN_MAX_MS  = 2.1
 
-arrayOffset = -10         # degrees to add/subtract from each heading in rotation_array
+arrayOffset = -0         # degrees to add/subtract from each heading in rotation_array
 arrayCorrection = 0   # degrees to add/subtract from each heading after each lap
 # ------------------------------------------------------------------
-
-# ----------------------------- 
-# Colour smoothing (EMA) - added for more robust blue detection
-# -----------------------------
-RGB_EMA_ALPHA = 0.3
-ema_r = None
-ema_g = None
-ema_b = None
-
-def ema_update(r, g, b):
-    global ema_r, ema_g, ema_b
-    if ema_r is None:
-        ema_r, ema_g, ema_b = r, g, b
-    else:
-        ema_r = RGB_EMA_ALPHA * r + (1 - RGB_EMA_ALPHA) * ema_r
-        ema_g = RGB_EMA_ALPHA * g + (1 - RGB_EMA_ALPHA) * ema_g
-        ema_b = RGB_EMA_ALPHA * b + (1 - RGB_EMA_ALPHA) * ema_b
-    return int(ema_r), int(ema_g), int(ema_b)
-
-
 def confirm_hl_burst(target_id, samples=5, interval_s=0.05, required_positives=5):
     """Confirm a HuskyLens ID across several frames by polling requestAll()."""
     if hl is None:
@@ -645,7 +591,8 @@ while True:
             (orientation_colour == "blue"   and any(d.ID == HUSKYLENS_BLUE_ID for d in husky_detections))):
 
             Movement.brake()
-            Movement.set_steering_angle(POST_SEQUENCE_NEUTRAL_ANGLE)
+            final_lock_angle = -TURN_MAX_ANGLE if orientation_colour == "orange" else TURN_MAX_ANGLE
+            Movement.set_steering_angle(final_lock_angle, max_angle=TURN_MAX_ANGLE, full_range=True)
 
             if forward_start_time is None:
                 forward_start_time = time.time()
@@ -670,11 +617,11 @@ while True:
             GPIO.output(IN1, GPIO.LOW)
             GPIO.output(IN2, GPIO.HIGH)
             Movement.set_motor_forward(0)
-            Movement.set_steering_angle(POST_SEQUENCE_NEUTRAL_ANGLE)
 
             post_sequence_mode = False
             forward_start_time = None
-            print(f"Final {orientation_colour} line detected — forward {forward_duration:.2f}s, reversed {reverse_duration:.2f}s, stopped at heading 0°.")
+            print(f"Final {orientation_colour} line detected — wheels locked {final_lock_angle:+.0f}°, "
+                f"forward {forward_duration:.2f}s, reversed {reverse_duration:.2f}s.")
             break
 
     # ── Normal mode ───────────────────────────────────────────────────────────
@@ -816,4 +763,3 @@ while True:
                 print(f"Post-laps forward for FIRST_SIDE_HALF={FIRST_SIDE_HALF:.2f}s complete")
 
     time.sleep(0.01)
-
