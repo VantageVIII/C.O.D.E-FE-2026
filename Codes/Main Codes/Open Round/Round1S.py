@@ -220,7 +220,7 @@ TURN_EXIT_DELAY  = 0   # delay after the turn pulse ends before exiting turn mod
 SERVO_TURN_MIN_MS  = 0.9
 SERVO_TURN_MAX_MS  = 2.1
 
-arrayOffset = -10         # degrees to add/subtract from each heading in rotation_array
+arrayOffset = -5         # degrees to add/subtract from each heading in rotation_array
 arrayCorrection = 0   # degrees to add/subtract from each heading after each lap
 # ------------------------------------------------------------------
 def confirm_hl_burst(target_id, samples=5, interval_s=0.05, required_positives=5):

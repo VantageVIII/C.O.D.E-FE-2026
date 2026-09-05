@@ -8,7 +8,7 @@
 TUNING & TROUBLESHOOTING GUIDE
 ===============================================================================
 1. Servo Twitching / Off-center: Adjust `SERVO_NEUTRAL_MS` (currently 1.4).
-   If corners turn too tight one way, adjust `SERVO_OFFSET`.
+   If corners turn too tight one way, adjust `SERVO_OFFSET`.4
 2. Gyro Drift: Ensure robot is perfectly still during boot. Adjust
    `ARRAY_CORRECTION` to add/sub degrees per lap to fight mechanical drift.
 3. False Pillar Detections: Increase `SIGN_CONFIRM_REQUIRED` (e.g., to 4 out of 5)
@@ -26,6 +26,7 @@ import time
 import struct
 import threading
 import argparse
+import math
 from enum import Enum, auto
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
@@ -59,9 +60,9 @@ ROBOT_LENGTH_CM   = 30.0
 HL_DOWN_BLUE_ID   = 1           # Blue on the down camera
 HL_DOWN_ORANGE_ID = 2           # Orange on the down camera
 
-HL_FWD_GREEN_ID   = 1           # Green pillar — pass on the LEFT
-HL_FWD_RED_ID     = 2           # Red pillar — pass on the RIGHT
-HL_FWD_PURPLE_ID  = 3           # Purple — parking marker
+HL_FWD_GREEN_ID   = [1, 2, 3]   # Green pillar — pass on the LEFT
+HL_FWD_RED_ID     = [4, 5, 6]   # Red pillar — pass on the RIGHT
+HL_FWD_PURPLE_ID  = 7           # Purple — parking marker
 
 # Legacy mapping (for Round 1 logic compatibility)
 HUSKYLENS_BLUE_ID   = HL_DOWN_BLUE_ID
@@ -74,11 +75,11 @@ SERVO_TURN_MAX_MS   = 2.1
 SERVO_OFFSET        = 0
 
 # ── Motor / Speed Tuning ─────────────────────────────────────────────────────
-NORMAL_SPEED        = 25
-CORRECTION_SPEED    = 20
-TURN_SPEED          = 30
-TURN_CRAWL_SPEED    = 30
-EXIT_BURST_POWER    = 40
+NORMAL_SPEED        = 15
+CORRECTION_SPEED    = 13
+TURN_SPEED          = 25
+TURN_CRAWL_SPEED    = 25
+EXIT_BURST_POWER    = 20
 EXIT_BURST_FRAMES   = 10
 
 MOTOR_PWM_FREQ      = 200
@@ -86,13 +87,12 @@ SERVO_PWM_FREQ      = 50
 
 # ── Turn Geometry ────────────────────────────────────────────────────────────
 TURN_MAX_ANGLE       = 45
-TURN_SETTLE_FRAMES   = 6
-TURN_ENTRY_DELAY     = 0.2
-TURN_EXIT_DELAY      = 0.1
+TURN_SETTLE_FRAMES   = 5
+TURN_EXIT_DELAY      = 0.0
 
 POST_SEQUENCE_REVERSE_RATIO  = 0.55
 POST_SEQUENCE_NEUTRAL_ANGLE  = 0
-ARRAY_OFFSET         = -20
+ARRAY_OFFSET         = 10
 ARRAY_CORRECTION     = 0
 
 # ── Color Confirmation ───────────────────────────────────────────────────────
@@ -107,7 +107,7 @@ MAX_LAPS             = 3
 MIN_LAPS_FOR_PARKING = 3
 
 # ── Sign Avoidance Tuning ────────────────────────────────────────────────────
-SIGN_STEER_OFFSET       = 25.0
+SIGN_STEER_OFFSET       = -30.0
 SIGN_CONFIRM_SAMPLES    = 5
 SIGN_CONFIRM_REQUIRED   = 3
 SIGN_MIN_BOX_WIDTH      = 20
@@ -119,6 +119,7 @@ MAX_COLOR_SLOTS_PER_CAMERA  = 2       # Max green/red detections kept per camera
 CAMERA_FOV_DEG              = 60
 CAMERA_OUTWARD_ANGLE_DEG    = 15
 LENS_SPACING_MM             = 59
+LENS_PIXEL_OFFSET           = 20      # positive means right-camera center is +20 px relative to left-camera center
 PILLAR_STEER_MAX_ANGLE      = 30.0    # Max proportional steer from pillar offset
 PILLAR_STEER_GAIN           = 0.8     # Pixels → degrees proportional gain
 STRICT_CAMERA_SIDE_RULE     = True
@@ -128,9 +129,9 @@ GREEN_HOLD_S                = 0.12    # seconds to hold straight while waiting
 GREEN_SHARPEN               = 1.15
 RED_SHARPEN                 = 1.10
 PRIMARY_CAMERA_HOLD_S       = 0.10
-IMMEDIATE_COLLISION_AREA    = 8000
+IMMEDIATE_COLLISION_Y       = 160     # Y-coordinate (0-240) bottom edge emergency threshold
 MAX_AVOID_ANGLE             = 45       # degrees max gyro offset for avoidance
-STRAIGHTEN_AFTER_EXIT_S     = 0.5      # straighten wheels after pillar exits corresponding camera
+SAFE_CLEARANCE_M            = 0.37     # 7cm camera overhang + 20cm wheel gap + 10cm safety margin
 DETECTION_DEBOUNCE_S        = 0.15    # 150 ms debounce window
 HUSKYLENS_CENTER_X          = 160     # Pixel center of the 320px-wide HuskyLens frame
 CENTER_EPSILON_NORM         = 0.15    # normalized offset threshold for "near center"
@@ -150,6 +151,12 @@ PARKING_STRAIGHTEN_S      = 0.4
 PARKING_FINAL_CREEP_S     = 0.3
 PARKING_MARKER_CENTER_X   = 160
 
+def get_estimated_velocity(pwm_speed: int) -> float:
+    """
+    Maps motor PWM percentage to physical m/s.
+    Based on calibration: 80 PWM = 0.92 m/s -> Ratio is 0.0115
+    """
+    return pwm_speed * 0.0115
 
 # =============================================================================
 # 2. MOCK CLASSES (For --simulate flag)
@@ -514,18 +521,8 @@ def build_pillar_context(
     left_allowed = apply_zone_filter(left_f["color"], "left")
     right_allowed = apply_zone_filter(right_f["color"], "right")
 
-    if is_manual_turn and turn_direction is not None:
-        # Anticlockwise (left turn) → left camera primary
-        # Clockwise (right turn)    → right camera primary
-        if turn_direction == "left":
-            primary_camera = "left"
-            color_dets = list(left_allowed)
-        else:
-            primary_camera = "right"
-            color_dets = list(right_allowed)
-    else:
-        # Normal driving: merge both cameras' capped color detections
-        color_dets = left_allowed + right_allowed
+    # ALWAYS merge both cameras' capped color detections (Primary camera isolation removed)
+    color_dets = left_allowed + right_allowed
 
     # Sort merged list: closer (larger area) first, center-proximity as tiebreak
     color_dets.sort(key=_det_sort_key)
@@ -536,7 +533,7 @@ def build_pillar_context(
         closest_pillar=closest,
         all_color_dets=color_dets,
         magenta_dets=all_magenta,
-        primary_camera=primary_camera,
+        primary_camera=None,
     )
 
 def compute_pillar_steer(
@@ -545,33 +542,41 @@ def compute_pillar_steer(
     yaw: float,
 ) -> float:
     """
-    Compute proportional steering angle to avoid a pillar.
-
-    Green (ID1) → steer LEFT  (positive heading offset → negative wheel angle)
-    Red   (ID2) → steer RIGHT (negative heading offset → positive wheel angle)
-
-    Returns a steering angle in the range [-PILLAR_STEER_MAX_ANGLE, +PILLAR_STEER_MAX_ANGLE].
+    Compute steering using a robot-centric horizontal offset.
+    pillar.cam must be 'left' or 'right'.
+    Positive robot_offset_px => pillar is to robot's right.
     """
-    horiz_offset = pillar.x - HUSKYLENS_CENTER_X  # positive = pillar is right of center
+    if pillar.cam == "left":
+        # left camera is mounted left of robot center: shift its x to robot center
+        # robot_offset_px positive = pillar to robot's right
+        robot_offset_px = (pillar.x - HUSKYLENS_CENTER_X) + (LENS_PIXEL_OFFSET / 2)
+    elif pillar.cam == "right":
+        # right camera is mounted right of robot center: shift its x to robot center
+        robot_offset_px = (pillar.x - HUSKYLENS_CENTER_X) - (LENS_PIXEL_OFFSET / 2)
+    else:
+        robot_offset_px = (pillar.x - HUSKYLENS_CENTER_X)
 
     if pillar.ID == HL_FWD_GREEN_ID:
-        # Go LEFT of the pillar: steer left (negative angle)
-        raw = -PILLAR_STEER_GAIN * abs(horiz_offset)
-        # If pillar is left of center, steer harder left; if right, less correction needed
-        if horiz_offset < 0:
-            raw = -PILLAR_STEER_GAIN * (abs(horiz_offset) + 20)  # extra push
+        # Green (ID1): Steer left (negative angle).
+        if robot_offset_px < 0:
+            raw = -PILLAR_STEER_GAIN * (abs(robot_offset_px) + 20)  # extra push if already on our left
         else:
-            raw = -PILLAR_STEER_GAIN * max(10, abs(horiz_offset) - 10)
+            raw = -PILLAR_STEER_GAIN * max(10, abs(robot_offset_px) - 10)
     elif pillar.ID == HL_FWD_RED_ID:
-        # Go RIGHT of the pillar: steer right (positive angle)
-        if horiz_offset > 0:
-            raw = PILLAR_STEER_GAIN * (abs(horiz_offset) + 20)   # extra push
+        # Red (ID2): Steer right (positive angle).
+        if robot_offset_px > 0:
+            raw = PILLAR_STEER_GAIN * (abs(robot_offset_px) + 20)   # extra push if already on our right
         else:
-            raw = PILLAR_STEER_GAIN * max(10, abs(horiz_offset) - 10)
+            raw = PILLAR_STEER_GAIN * max(10, abs(robot_offset_px) - 10)
     else:
         return 0.0
 
-    return max(-PILLAR_STEER_MAX_ANGLE, min(PILLAR_STEER_MAX_ANGLE, raw))
+    steer = max(-PILLAR_STEER_MAX_ANGLE, min(PILLAR_STEER_MAX_ANGLE, raw))
+    
+    # Debug logging
+    print(f"PILLAR: cam={pillar.cam} id={pillar.ID} x={pillar.x} area={pillar.width*pillar.height} robot_offset_px={robot_offset_px:.1f} steer={steer:.2f}")
+    
+    return steer
 
 # =============================================================================
 # 7. STATE MACHINES (Parking & Navigation)
@@ -654,6 +659,7 @@ class NavState(Enum):
     DETECTING_ORIENTATION = auto()
     STRAIGHT_DRIVING = auto()
     SIGN_AVOIDANCE = auto()
+    DELAY_BEFORE_TURN = auto()
     MANUAL_TURN_SETTLE = auto()
     MANUAL_TURN_PULSE = auto()
     EXIT_BURST = auto()
@@ -716,6 +722,15 @@ class Navigator:
         self._pillar_exit_time: float = 0.0               # When pillar exited corresponding camera
         self._pillar_exited: bool = False                  # Whether pillar has exited corresponding camera
 
+        # Distance tracking for hybrid avoidance
+        self._last_loop_time: float = 0.0                  # Last time step() ran
+        self._clearance_distance_m: float = 0.0            # Physical clearance distance tracked
+        self._lateral_offset_m: float = 0.0                # Cross-track error (negative = left, positive = right)
+
+        # Advanced corner tracking
+        self._turn_sharpness: float = 1.0                  # Multiplier for TURN_MAX_ANGLE
+        self._turn_delay_start: float = 0.0                # Timer for delaying wide turns
+
     def _get_sharpened_steer(self, p: Detection, yaw: float, is_emergency: bool = False) -> float:
         """Compute sharpened steering: hold-then-turn for green, immediate for red.
         Returns a clamped steering angle in [-MAX_AVOID_ANGLE, +MAX_AVOID_ANGLE]."""
@@ -730,7 +745,8 @@ class Navigator:
                 if self.green_hold_start_time == 0.0:
                     self.green_hold_start_time = now
                 if now - self.green_hold_start_time > GREEN_HOLD_S:
-                    self.green_hold_start_time = 0.0
+                    # Timer expired! It's time to steer! 
+                    # Do NOT reset the timer to 0.0 here, or it will infinitely loop!
                     steer = compute_pillar_steer(p, self.rotation_array[self.current_index], yaw) * GREEN_SHARPEN
                 else:
                     steer = 0.0
@@ -749,6 +765,24 @@ class Navigator:
 
     def step(self, yaw: float, down_dets: List[Detection], left_fwd_dets: List[Detection], right_fwd_dets: List[Detection]) -> NavCommand:
         self.frame_count += 1
+
+        # 1. Calculate time passed since last loop (dt)
+        current_time = time.time()
+        if self._last_loop_time == 0.0:
+            self._last_loop_time = current_time
+        dt = current_time - self._last_loop_time
+        self._last_loop_time = current_time
+
+        # 2. Calculate physical distance traveled in this loop
+        current_velocity = get_estimated_velocity(SIGN_APPROACH_SPEED)
+        distance_this_loop = current_velocity * dt
+
+        # 3. Track lateral drift (cross-track error)
+        # normalize_angle_error returns (target - yaw).
+        # We invert it to get (yaw - target) so that pointing left (negative yaw) gives negative drift
+        yaw_diff = -normalize_angle_error(self.rotation_array[self.current_index], yaw)
+        lateral_velocity = current_velocity * math.sin(math.radians(yaw_diff))
+        self._lateral_offset_m += lateral_velocity * dt
 
         # ── Pillar detection pipeline ──
         is_in_manual_turn = self.state in (NavState.MANUAL_TURN_SETTLE, NavState.MANUAL_TURN_PULSE, NavState.EXIT_BURST)
@@ -774,19 +808,13 @@ class Navigator:
                 self.rotation_array = build_rotation_array_cw()
                 self.orientation_colour = "orange"
                 print("\nClockwise selected. Entering FIRST TURN immediately.")
-                
-                # TRIGGER TURN IMMEDIATELY
-                self._enter_manual_turn(yaw)
-                return NavCommand(0, TURN_CRAWL_SPEED, full_range=True)
+                return self._trigger_smart_corner(yaw, left_fwd_dets, right_fwd_dets)
                 
             elif has_down_blue:
                 self.rotation_array = build_rotation_array_ccw()
                 self.orientation_colour = "blue"
                 print("\nCounterclockwise selected. Entering FIRST TURN immediately.")
-                
-                # TRIGGER TURN IMMEDIATELY
-                self._enter_manual_turn(yaw)
-                return NavCommand(0, TURN_CRAWL_SPEED, full_range=True)
+                return self._trigger_smart_corner(yaw, left_fwd_dets, right_fwd_dets)
                 
             return NavCommand(0, NORMAL_SPEED)
 
@@ -852,12 +880,16 @@ class Navigator:
                 if time.time() >= self.manual_turn_cooldown_until:
                     if self.first_side_start_time is not None and not self.first_side_measured:
                         self.first_side_measured = True
-                    print("\nCorner detected! Entering turn.")
-                    self._enter_manual_turn(yaw)
-                    return NavCommand(0, TURN_CRAWL_SPEED, full_range=True)
+                    return self._trigger_smart_corner(yaw, left_fwd_dets, right_fwd_dets)
 
             target_angle = self.rotation_array[self.current_index]
-            raw_angle = max(-60, min(60, -normalize_angle_error(target_angle, yaw)))
+            
+            # Cross-track error correction (Sharpened by 25% based on feedback)
+            # If _lateral_offset_m is negative (drifted left), we want a POSITIVE (right) merge angle to get back.
+            merge_angle = -self._lateral_offset_m * 190.0  
+            merge_angle = max(-35.0, min(35.0, merge_angle))
+            
+            raw_angle = max(-60, min(60, -normalize_angle_error(target_angle + merge_angle, yaw)))
 
             if is_orientation_color:
                 if self.orientation_colour == "orange":
@@ -888,62 +920,63 @@ class Navigator:
         # 3. SIGN AVOIDANCE
         # =========================================================================
         if self.state == NavState.SIGN_AVOIDANCE:
-            now = time.time()
             p = pillar_ctx.closest_pillar
 
-            # Check if the pillar we're avoiding is still visible on ANY camera
-            pillar_still_visible = (p is not None and
-                ((self._sign_type == "green" and p.ID == HL_FWD_GREEN_ID) or
-                 (self._sign_type == "red"   and p.ID == HL_FWD_RED_ID)))
-
-            # Check if the pillar has exited the CORRESPONDING side camera:
-            #   Green avoidance → pillar should eventually exit the RIGHT camera
-            #   Red avoidance   → pillar should eventually exit the LEFT camera
+            # Determine which camera and color we are checking for clearance
             if self._sign_type == "green":
-                corresponding_has_pillar = any(d.ID == HL_FWD_GREEN_ID for d in right_fwd_dets)
+                target_id = HL_FWD_GREEN_ID
+                cam_dets = left_fwd_dets
             else:
-                corresponding_has_pillar = any(d.ID == HL_FWD_RED_ID for d in left_fwd_dets)
+                target_id = HL_FWD_RED_ID
+                cam_dets = right_fwd_dets
 
-            if not self._pillar_exited:
-                if not pillar_still_visible and not corresponding_has_pillar:
-                    # Pillar no longer visible on any camera → mark as exited
-                    self._pillar_exited = True
-                    self._pillar_exit_time = now
-                    print(f"  Pillar exited corresponding camera — straightening in {STRAIGHTEN_AFTER_EXIT_S}s")
-            
-            # Once exited, wait STRAIGHTEN_AFTER_EXIT_S then return to straight driving
-            if self._pillar_exited:
-                if now - self._pillar_exit_time >= STRAIGHTEN_AFTER_EXIT_S:
+            # Check if ANY pillar of that color is still visible in that camera
+            pillar_still_visible = len([d for d in cam_dets if d.ID == target_id]) > 0
+
+            if pillar_still_visible:
+                self._clearance_distance_m = 0.0
+
+                if p is not None and p.ID == target_id:
+                    is_emergency = (p.y + p.height / 2) >= IMMEDIATE_COLLISION_Y
+                    # _get_sharpened_steer already returns the perfect raw steering angle (- for left, + for right)
+                    steer_out = self._get_sharpened_steer(p, yaw, is_emergency=is_emergency)
+                    return NavCommand(steer_out, SIGN_APPROACH_SPEED)
+                
+                # Fallback if no closest pillar is found but some are visible
+                escape_steer = -35.0 if self._sign_type == "green" else 35.0
+                return NavCommand(escape_steer, SIGN_APPROACH_SPEED)
+            else:
+                # The pillar has left the camera! Accumulate physical distance traveled.
+                self._clearance_distance_m += distance_this_loop
+
+                if self._clearance_distance_m >= SAFE_CLEARANCE_M:
+                    print(f"  Pillar CLEARED. Traveled {self._clearance_distance_m:.2f}m. Gentle recovery.")
                     self.state = NavState.STRAIGHT_DRIVING
-                    self._straight_until = 0.0
+                    self._clearance_distance_m = 0.0
                     self._pillar_exited = False
                     self.green_hold_start_time = 0.0
-                    print(f"  Avoidance complete — STRAIGHT_DRIVING")
-                    return NavCommand(max(-60, min(60, -normalize_angle_error(self.rotation_array[self.current_index], yaw))), NORMAL_SPEED)
+
+                    gentle_steer = max(-20.0, min(20.0, -normalize_angle_error(self.rotation_array[self.current_index], yaw)))
+                    return NavCommand(gentle_steer, NORMAL_SPEED)
                 else:
-                    # Hold the avoidance heading during the exit delay
-                    steer = max(-MAX_AVOID_ANGLE, min(MAX_AVOID_ANGLE,
-                                -normalize_angle_error(self._avoidance_target_angle, yaw)))
-                    return NavCommand(steer, SIGN_APPROACH_SPEED)
-            
-            # Pillar is still visible — continue avoidance with proportional steer
-            if pillar_still_visible:
-                is_emergency = _det_area(p) >= IMMEDIATE_COLLISION_AREA
-                steer = self._get_sharpened_steer(p, yaw, is_emergency=is_emergency)
-                # Clamp gyro offset to ±MAX_AVOID_ANGLE from entry yaw
-                clamped_target = max(self._avoidance_entry_yaw - MAX_AVOID_ANGLE,
-                                     min(self._avoidance_entry_yaw + MAX_AVOID_ANGLE,
-                                         yaw + steer))
-                self._avoidance_target_angle = clamped_target
-                steer_cmd = max(-MAX_AVOID_ANGLE, min(MAX_AVOID_ANGLE,
-                                -normalize_angle_error(clamped_target, yaw)))
-                return NavCommand(steer_cmd, SIGN_APPROACH_SPEED)
+                    # Pillar lost, keep steering diagonally to escape
+                    # Green = steer left (-35), Red = steer right (+35)
+                    escape_steer = -35.0 if self._sign_type == "green" else 35.0
+                    return NavCommand(escape_steer, SIGN_APPROACH_SPEED)
+
+        # =========================================================================
+        # 3.5. DELAY BEFORE TURN
+        # =========================================================================
+        elif self.state == NavState.DELAY_BEFORE_TURN:
+            # Wait ~350ms to drive slightly past the apex before starting the wide turn
+            if time.time() - self._turn_delay_start >= 0.35:
+                self._enter_manual_turn(yaw)
+                return NavCommand(0, TURN_CRAWL_SPEED, full_range=True)
             else:
-                # Pillar lost from main view but not yet from corresponding camera
-                # — hold last avoidance heading
-                steer = max(-MAX_AVOID_ANGLE, min(MAX_AVOID_ANGLE,
-                            -normalize_angle_error(self._avoidance_target_angle, yaw)))
-                return NavCommand(steer, SIGN_APPROACH_SPEED)
+                # Keep tracking straight down the current lane
+                target_angle = self.rotation_array[self.current_index]
+                raw_angle = max(-60, min(60, -normalize_angle_error(target_angle, yaw)))
+                return NavCommand(raw_angle, NORMAL_SPEED)
 
         # =========================================================================
         # 4. MANUAL TURN SETTLE
@@ -960,7 +993,7 @@ class Navigator:
             # Blend pillar avoidance from primary camera during turn
             p = pillar_ctx.closest_pillar
             if p is not None:
-                is_emergency = _det_area(p) >= IMMEDIATE_COLLISION_AREA
+                is_emergency = (p.y + p.height / 2) >= IMMEDIATE_COLLISION_Y
                 pillar_blend = self._get_sharpened_steer(p, yaw, is_emergency=is_emergency)
                 raw_angle = max(-60, min(60, raw_angle + pillar_blend * 0.5))  # 50% blend
 
@@ -978,7 +1011,7 @@ class Navigator:
             # Blend pillar avoidance from primary camera during turn
             p = pillar_ctx.closest_pillar
             if p is not None:
-                is_emergency = _det_area(p) >= IMMEDIATE_COLLISION_AREA
+                is_emergency = (p.y + p.height / 2) >= IMMEDIATE_COLLISION_Y
                 pillar_blend = self._get_sharpened_steer(p, yaw, is_emergency=is_emergency)
                 raw_angle = max(-60, min(60, raw_angle + pillar_blend * 0.5))  # 50% blend
 
@@ -1028,6 +1061,38 @@ class Navigator:
 
         return NavCommand(0, 0, brake=True)
 
+    def _trigger_smart_corner(self, yaw: float, left_fwd_dets: List[Detection], right_fwd_dets: List[Detection]) -> NavCommand:
+        print("\nCorner detected! Analyzing pillars for turn profile...")
+        
+        turn_dir = "left" if self.orientation_colour == "blue" else "right"
+        sharp_id = HL_FWD_RED_ID if turn_dir == "right" else HL_FWD_GREEN_ID
+        wide_id = HL_FWD_GREEN_ID if turn_dir == "right" else HL_FWD_RED_ID
+        
+        # Only consider pillars that are physically close to the corner (Y > 120 or area > 2000)
+        # This prevents reacting to a pillar that is 1 meter down the NEXT straightaway!
+        valid_sharp = [d for d in left_fwd_dets + right_fwd_dets if d.ID == sharp_id and (d.y + d.height/2 > 100 or d.width * d.height > 1500)]
+        valid_wide = [d for d in left_fwd_dets + right_fwd_dets if d.ID == wide_id and (d.y + d.height/2 > 100 or d.width * d.height > 1500)]
+        
+        has_sharp = len(valid_sharp) > 0
+        has_wide = len(valid_wide) > 0
+        
+        if has_wide:
+            print(f"  -> Wide pillar detected at corner. Delaying {turn_dir} turn.")
+            self._turn_sharpness = 0.65  # Gentler arc
+            self.state = NavState.DELAY_BEFORE_TURN
+            self._turn_delay_start = time.time()
+            return NavCommand(0, NORMAL_SPEED) # Keep going straight for a moment
+        else:
+            if has_sharp:
+                print(f"  -> Sharp pillar detected at corner. Tight {turn_dir} turn.")
+                self._turn_sharpness = 1.0
+            else:
+                print(f"  -> No pillar at corner. Normal {turn_dir} turn.")
+                self._turn_sharpness = 0.75
+                
+            self._enter_manual_turn(yaw)
+            return NavCommand(0, TURN_CRAWL_SPEED, full_range=True)
+
     def _enter_manual_turn(self, yaw):
         self.state = NavState.MANUAL_TURN_SETTLE
         self.manual_turn_frames = 0
@@ -1047,10 +1112,11 @@ class Navigator:
 
     def _compute_turn_angle(self, yaw):
         err = normalize_angle_error(self.manual_turn_steer_target, yaw)
-        ang = -TURN_MAX_ANGLE if err > 0 else TURN_MAX_ANGLE
+        ang = (-TURN_MAX_ANGLE if err > 0 else TURN_MAX_ANGLE) * self._turn_sharpness
         return max(-TURN_MAX_ANGLE, min(0, ang)) if self.manual_turn_direction == "left" else max(0, min(TURN_MAX_ANGLE, ang))
 
     def _advance_rotation_index(self):
+        self._lateral_offset_m = 0.0  # Reset cross-track drift accumulation on corners!
         self.current_index += 1
         if self.current_index >= len(self.rotation_array):
             self.current_index = 0
@@ -1127,5 +1193,25 @@ def main():
         GPIO.cleanup()
         print("Run Complete.")
 
+def test_steer_logic():
+    print("--- Running steer logic tests ---")
+    
+    # Synthetic detection: Left camera green at x=120
+    d1 = Detection(ID=HL_FWD_GREEN_ID, x=120, y=120, width=50, height=100)
+    d1.cam = "left"
+    steer1 = compute_pillar_steer(d1, 0.0, 0.0)
+    print(f"Test 1 (Left Green): {steer1:.2f}")
+    assert steer1 < 0, f"Expected negative steer for left-green, got {steer1}"
+    
+    # Synthetic detection: Right camera red at x=200
+    d2 = Detection(ID=HL_FWD_RED_ID, x=200, y=120, width=50, height=100)
+    d2.cam = "right"
+    steer2 = compute_pillar_steer(d2, 0.0, 0.0)
+    print(f"Test 2 (Right Red): {steer2:.2f}")
+    assert steer2 > 0, f"Expected positive steer for right-red, got {steer2}"
+    
+    print("Steer tests passed!\n")
+
 if __name__ == "__main__":
+    test_steer_logic()
     main()
