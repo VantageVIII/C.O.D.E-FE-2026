@@ -17,7 +17,7 @@ Our repository is organized to ensure full reproducibility for any team wishing 
 * `/Codes/`: Contains all software required to run the robot.
   * `/Base Codes/`: Contains low-level hardware interfacing scripts (e.g., pin definitions, bit-bashing logic, motor controller initialization).
   * `/Main Codes/`: Contains the high-level logic, including the finite state machine, mapping algorithms, and obstacle avoidance logic for the competition runs.
-  * `/Test Codes/`: Contains isolated scripts used during development to test individual components (e.g., servo calibration, camera frame testing).
+  * `/Test Codes/`: Contains isolated scripts used during development to test individual components.
 * `/models/`: Contains all 3D-printable `.STL` files for our custom ABS chassis, including the upper plate, lower plate, ribs, and camera mounting brackets.
 * `/Documentation/`: Contains our Engineering Journal, component comparisons, color value logs, and problem-solving logs.
 * `/media/`: Contains photos and videos of the robot in action, including official qualification run recordings.
@@ -30,63 +30,65 @@ Our repository is organized to ensure full reproducibility for any team wishing 
 The MSE-6 is built using carefully selected commercial off-the-shelf components combined with a custom-fabricated chassis.
 
 ### Main Controller
-* **RDK X5 SBC:** The brain of our robot. Featuring an octa-core ARM Cortex-A55 processor, 8 GB of LPDDR4 memory, and a 10 TOPS NPU (Neural Processing Unit). We selected the RDK X5 over alternatives like the Raspberry Pi 5 because of its superior AI acceleration capabilities, which are essential for processing three simultaneous camera feeds without latency. 
+* **RDK X5 SBC:** The brain of our robot. Featuring an octa-core ARM Cortex-A55 processor, 8 GB of LPDDR4 memory, and a 10 TOPS NPU (Neural Processing Unit). We selected the RDK X5 over alternatives because of its superior AI capabilities, which are essential for processing three simultaneous camera feeds. 
 
 ### Vision & Sensor System
-* **3x HuskyLens V1 AI Cameras:** We utilize a tri-camera setup. One camera faces downward to replace traditional color sensors, utilizing advanced pattern recognition to map the track lines (blue/orange) at high speeds. Two forward-facing cameras are angled to provide a combined 120° field of view, detecting track boundaries and red/green traffic pillars without blind spots.
+* **3x HuskyLens V1 AI Cameras:** We utilize a tri-camera setup. One camera faces downward to read mat colors. Two forward-facing cameras are angled to provide a combined 120° field of view, detecting track boundaries and traffic pillars without blind spots.
 * **DFRobot 6-Axis Accelerometer/Gyro:** Mounted precisely on the chassis center axis. This provides crucial heading data to maintain perfectly straight trajectories between turns.
 
 ### Actuation & Movement
-* **Drive Motor:** A 12V 250 RPM Planetary DC motor. We opted for a high-torque ratio rather than a high-speed ratio to ensure smooth, predictable acceleration.
-* **Steering:** A DFRobot DS-R001 6Kg Clutch Servo. The internal clutch mechanism is a critical reliability upgrade—if the robot collides with a wall, the clutch slips instead of stripping the servo gears, preventing catastrophic mechanical failure.
-* **Motor Driver:** L298N Dual H-Bridge, chosen for its simplicity, thermal robustness, and reliability in driving our 12V planetary motor.
+* **Drive Motor:** A 12V 250 RPM Planetary DC motor. We opted for a high-torque ratio rather than a high-speed ratio. Because our code relies on GPIO bit-bashing for motor control, a torque-oriented layout allows for much smoother, less twitchy movement.
+* **Steering:** A DFRobot DS-R001 6Kg Clutch Servo. The internal clutch mechanism is a critical reliability upgrade—if the robot collides with a wall, the clutch slips instead of stripping the servo gears.
+* **Motor Driver:** L298N Dual H-Bridge.
 
 ### Power System
 * **Battery:** 3S1P 18650 Lithium-ion pack (11.1V nominal). 
-* **Power Regulation:** The 11.1V line runs through a 5A inline blade fuse for short-circuit protection, then into an XL4015 Buck Converter which steps the voltage down to a stable 5V (5A max) to power the RDK X5 and logic components safely.
+* **Power Regulation:** The 11.1V line runs into an XL4015 Buck Converter which steps the voltage down to a stable 5V. From the buck converter, the 5V line passes through a **5A inline blade fuse** before routing to the RDK X5 and logic components. This specific topology ensures that our 5V circuit is strictly protected from drawing more than the buck converter's maximum rating if a short occurs.
 
 ---
 
 ## 3. Step-by-Step Build & Assembly Guide
 
-To reproduce the MSE-6, follow these mechanical and electrical assembly instructions.
-
 ### Mechanical Assembly
-1. **Print the Chassis:** Navigate to the `/models/` directory and 3D print the upper and lower chassis plates using ABS filament. ABS is strictly recommended over PLA due to the high operating temperatures of the RDK X5 (approx. 60°C idle).
+1. **Print the Chassis:** Navigate to the `/models/` directory and 3D print the upper and lower chassis plates using ABS filament. ABS is required due to the operating temperatures of the RDK X5.
 2. **Mount the Drivetrain:** Secure the 12V Planetary DC motor to the rear motor bracket of the lower chassis. Attach the rear solid axle and wheels.
-3. **Install the Steering System:** Mount the DFRobot 6Kg Clutch Servo to the front of the lower chassis. Connect the steering linkage to the front wheel hubs, ensuring a maximum steering angle of 50° is achievable.
-4. **Assemble the Tiers:** Use the provided nylon spacers to mount the upper chassis plate above the lower plate. Ensure the structural ribs are aligned to distribute torque stress.
-5. **Mount the Sensors:** Attach the custom 3-camera bracket to the upper chassis. Angle the forward cameras outwards at 30° each from the center line. Mount the Gyro perfectly parallel to the chassis centerline.
+3. **Install the Steering System:** Mount the DFRobot 6Kg Clutch Servo to the front of the lower chassis. Connect the steering linkage to the front hubs.
+4. **Assemble the Tiers:** Use the provided nylon spacers to mount the upper chassis plate above the lower plate.
+5. **Mount the Sensors:** Attach the custom 3-camera bracket to the upper chassis. Angle the forward cameras outwards at 30° each from the center line. 
 
 ### Electrical Wiring & Integration
 *[PLACEHOLDER: Insert Markdown Image Link to Wiring Diagram here. E.g., `![Wiring Diagram](./media/wiring_diagram.png)`]*
 
-1. **Power Routing:** Connect the 3S1P battery to the 5A inline fuse. Split the output: route one parallel line directly to the 12V input of the L298N motor driver. Route the other line into the XL4015 Buck Converter.
-2. **Logic Power:** Tune the XL4015 output to exactly 5.0V using a multimeter. Connect the 5V output to the RDK X5 power input pins.
-3. **Motor Control:** Connect the RDK X5 GPIO pins to the IN1, IN2, and ENA pins on the L298N. (Note: We use software bit-bashing for control rather than hardware PWM).
-4. **Sensor Comms:** Connect the three HuskyLens cameras and the DFRobot Gyro to the I2C/UART interface pins on the RDK X5. Ensure common ground across all components.
+1. **Power Routing:** Connect the 3S1P battery to the XL4015 Buck Converter. Route the 5V output of the buck converter through the 5A inline fuse.
+2. **Logic Power:** Connect the output of the 5A fuse to the RDK X5 power input pins. Route a parallel 12V line directly from the battery to the L298N motor driver.
+3. **Motor Control:** Connect the RDK X5 GPIO pins to the IN1, IN2, and ENA pins on the L298N. 
+4. **Sensor Comms:** Connect the three HuskyLens cameras and the DFRobot Gyro to the I2C/UART interface pins on the RDK X5. 
 
 ---
 
-## 4. Software Architecture & Execution
+## 4. Software Architecture & Game Strategy
 
-Our software is written in Python and is designed to run on the RDK OS (Ubuntu 22.04 base). It heavily utilizes modular programming to separate hardware control from high-level decision-making.
+Our software is written in Python and runs on the RDK OS. We utilize a highly optimized Finite State Machine (FSM) to separate our strategies for Round 1 (Open Challenge) and Round 2 (Obstacle Challenge).
 
-### Module Breakdown
-* **Hardware Interface Module:** Handles the direct GPIO bit-bashing. Because the RDK X5 requires specific pin mappings, this module manually toggles pins to simulate PWM for the drive motor and translates angle requests into pulse widths for the clutch servo.
-* **Vision Processing Module:** Interfaces with the HuskyLens cameras via UART/I2C. It pulls bounding box data, color IDs, and block coordinates, filtering out false positives.
-* **Navigation & State Machine Module:** The core logic. It merges gyro heading data with camera vision data to determine the robot's current state.
+### Round 1: Open Challenge Strategy
+In Round 1, there are no traffic pillars, so our goal is maximum speed and efficiency.
+1. **Orientation Logic:** The downward-facing camera scans the mat to identify the starting color (blue or orange), determining if the robot must travel clockwise or counterclockwise.
+2. **Heading & Execution:** The robot relies entirely on the DFRobot Gyro for its heading. It is programmed to hug the **outer wall** as closely as possible, allowing for a wider turning radius and maximizing our top speed while remaining stable.
 
-### State Machine Logic
-1. **State 1: Search & Map (Lap 1):** The robot drives forward using the gyro to maintain heading. The downward camera looks for orange or blue markers. Upon detecting a color, it assigns the turning sequence (e.g., Blue = Counterclockwise track). The robot maps the location of red/green pillars.
-2. **State 2: Lane Follow (Laps 2 & 3):** The robot increases speed, relying on the mapped data and forward cameras to maintain its position relative to the inner wall.
-3. **State 3: Obstacle Avoidance:** If a green pillar is detected, the software calculates a proportional steering offset to safely pass the pillar on the left. If a red pillar is detected, it calculates an offset to pass on the right. Once the bounding box of the pillar passes the camera's FOV, the gyro re-establishes the straight-line heading.
+### Round 2: Obstacle Challenge Strategy
+In Round 2, the robot must obey the red and green traffic pillars. To guarantee reliability, we split the logic between a "Mapping Lap" and "Execution Laps".
+1. **Orientation Logic:** Similar to Round 1, the downward camera sets the initial orientation.
+2. **Lap 1 (Mapping & Evaluation):** The robot drives forward using gyro heading. Crucially, the robot is programmed to **stop** at the start of a turn. It uses the forward-facing HuskyLens to evaluate the traffic pillar. Based on the pillar's color and the robot's current orientation (CW/CCW), the algorithm determines if it needs to execute a **"narrow"** or **"sharp"** turn.
+3. **Memory Storage:** The robot saves this specific turn type (narrow or sharp) into an array sequence for that specific corner.
+4. **Laps 2 & 3 (Blind Execution):** For the remaining two laps, the robot does not rely on the cameras to look for the pillars. Instead, it reads the saved turn sequence from memory. This is a vital engineering decision: by navigating purely from memory on Laps 2 and 3, the robot mitigates the risk of missing a pillar or executing a wrong turn due to minor offsets or imperfections that accumulate over the run. 
 
-### Installation & Execution Guide
+---
+
+## 5. Installation & Execution Guide
 
 To run the software on a fresh RDK X5 setup:
 
-1. **Flash the OS:** Flash RDK OS Linux (Ubuntu 22.04 compatible) onto the RDK X5 using RDK Studio.
+1. **Flash the OS:** Download the official [RDK Studio Flasher](https://d-robotics.github.io/rdk_x_doc/en/RDK/) and flash RDK OS Linux onto the RDK X5.
 2. **Clone the Repository:**
    ```bash
    git clone https://github.com/VantageVIII/C.O.D.E-FE-2026.git
