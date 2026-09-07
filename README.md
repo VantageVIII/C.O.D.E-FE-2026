@@ -102,12 +102,12 @@ Application Download List:
    git clone https://github.com/VantageVIII/C.O.D.E-FE-2026.git
    cd C.O.D.E-FE-2026
 
-3.**Install Dependencies: Ensure Python 3 is installed. Then install the required libraries:**
+3. **Install Dependencies: Ensure Python 3 is installed. Then install the required libraries:**
     ```bash
     pip install matplotlib numpy smbus smbus2
     sudo apt-get install i2c-tools
 
-4.**Run the Code: Navigate to the Main Codes directory and execute the competition script:**
+4. **Run the Code: Navigate to the Main Codes directory and execute the competition script:**
     ```bash
     cd Codes/Main\ Codes/
     python3 main_run.py
