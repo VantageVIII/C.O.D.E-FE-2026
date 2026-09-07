@@ -78,18 +78,39 @@ In Round 1, there are no traffic pillars, so our goal is maximum speed and effic
 ### Round 2: Obstacle Challenge Strategy
 In Round 2, the robot must obey the red and green traffic pillars. To guarantee reliability, we split the logic between a "Mapping Lap" and "Execution Laps".
 1. **Orientation Logic:** Similar to Round 1, the downward camera sets the initial orientation.
-2. **Lap 1 (Mapping & Evaluation):** The robot drives forward using gyro heading. Crucially, the robot is programmed to **stop** at the start of a turn. It uses the forward-facing HuskyLens to evaluate the traffic pillar. Based on the pillar's color and the robot's current orientation (CW/CCW), the algorithm determines if it needs to execute a **"narrow"** or **"sharp"** turn.
-3. **Memory Storage:** The robot saves this specific turn type (narrow or sharp) into an array sequence for that specific corner.
-4. **Laps 2 & 3 (Blind Execution):** For the remaining two laps, the robot does not rely on the cameras to look for the pillars. Instead, it reads the saved turn sequence from memory. This is a vital engineering decision: by navigating purely from memory on Laps 2 and 3, the robot mitigates the risk of missing a pillar or executing a wrong turn due to minor offsets or imperfections that accumulate over the run. 
+2. **Lap 1 (Corner Mapping & Evaluation):** The robot drives forward using gyro heading. Crucially, the robot is programmed to **stop** at the start of a corner turn. It uses the forward-facing HuskyLens to evaluate the traffic pillar situated at the corner. Based on the pillar's color and the robot's current orientation (CW/CCW), the algorithm determines if it needs to execute a **"narrow"** or **"sharp"** turn.
+3. **Memory Storage:** The robot saves this specific corner turn type (narrow or sharp) into an array sequence.
+4. **Laps 2 & 3 (Corner Execution & Real-Time Avoidance):** For the remaining two laps, the robot utilizes a hybrid approach:
+   * **Corner Turns (Memory):** When the robot reaches the corners, it does not rely on the cameras. Instead, it reads the saved turn sequence (narrow or sharp) from memory and executes it "blindly." This is a vital engineering decision: by navigating corners purely from memory on Laps 2 and 3, the robot mitigates the risk of missing a pillar or executing a wrong turn due to minor offsets or imperfections that accumulate over the run.
+   * **Straightaway Pillars (Real-Time):** For pillars located on the straight sides of the track, the robot actively uses the forward HuskyLens cameras to detect and avoid them in real-time, safely shifting lanes as necessary.
 
 ---
 
 ## 5. Installation & Execution Guide
 
 To run the software on a fresh RDK X5 setup:
+Application Download List:
+[RDK Studio](https://d-robotics.github.io/rdk_x_doc/en/RDK/)
+[Thonny](https://thonny.org/)
+[Github Desktop](https://desktop.github.com/download/)
+[Google Antigravity](https://antigravity.google/download)
 
-1. **Flash the OS:** Download the official [RDK Studio Flasher](https://d-robotics.github.io/rdk_x_doc/en/RDK/) and flash RDK OS Linux onto the RDK X5.
+1. **Flash the OS:** Download the official RDK Studio and flash RDK OS Linux onto the RDK X5.
+
 2. **Clone the Repository:**
    ```bash
    git clone https://github.com/VantageVIII/C.O.D.E-FE-2026.git
    cd C.O.D.E-FE-2026
+
+3.**Install Dependencies: Ensure Python 3 is installed. Then install the required libraries:**
+    ```bash
+    pip install matplotlib numpy smbus smbus2
+    sudo apt-get install i2c-tools
+
+4.**Run the Code: Navigate to the Main Codes directory and execute the competition script:**
+    ```bash
+    cd Codes/Main\ Codes/
+    python3 main_run.py
+
+6. **License and Credits**
+Designed and programmed by Team C.O.D.E. (Jadon Steele & Mischa Miller) for the WRO Future Engineers 2026 Season. Special thanks to HelderBerg Robotics Club for their continued support, and Prints by Paul for 3D manufacturing assistance.
