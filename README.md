@@ -54,7 +54,7 @@ The MSE-6 is built using carefully selected commercial off-the-shelf components 
 2. **Mount the Drivetrain:** Secure the 12V Planetary DC motor to the rear motor bracket of the lower chassis. Attach the rear solid axle and wheels.
 3. **Install the Steering System:** Mount the DFRobot 6Kg Clutch Servo to the front of the lower chassis. Connect the steering linkage to the front hubs.
 4. **Assemble the Tiers:** Use the provided nylon spacers to mount the upper chassis plate above the lower plate.
-5. **Mount the Sensors:** Attach the custom 3-camera bracket to the upper chassis. Angle the forward cameras outwards at 30° each from the center line. 
+5. **Mount the Sensors:** Attach the custom 3-camera bracket to the upper chassis. Angle the forward cameras outwards at 15° each from the center line. 
 
 ### Electrical Wiring & Integration
 *[PLACEHOLDER: Insert Markdown Image Link to Wiring Diagram here. E.g., `![Wiring Diagram](./media/wiring_diagram.png)`]*
@@ -88,7 +88,7 @@ In Round 2, the robot must obey the red and green traffic pillars. To guarantee 
 
 ## 5. Installation & Execution Guide
 
-To run the software on a fresh RDK X5 setup:
+### To run the software on a fresh RDK X5 setup:
 **Application Download List:**
 * [RDK Studio](https://d-robotics.github.io/rdk_x_doc/en/RDK/)
 * [Thonny](https://thonny.org/)
