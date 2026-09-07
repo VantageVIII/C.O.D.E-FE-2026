@@ -89,11 +89,11 @@ In Round 2, the robot must obey the red and green traffic pillars. To guarantee 
 ## 5. Installation & Execution Guide
 
 To run the software on a fresh RDK X5 setup:
-Application Download List:
-[RDK Studio](https://d-robotics.github.io/rdk_x_doc/en/RDK/)
-[Thonny](https://thonny.org/)
-[Github Desktop](https://desktop.github.com/download/)
-[Google Antigravity](https://antigravity.google/download)
+**Application Download List:**
+* [RDK Studio](https://d-robotics.github.io/rdk_x_doc/en/RDK/)
+* [Thonny](https://thonny.org/)
+* [Github Desktop](https://desktop.github.com/download/)
+* [Google Antigravity](https://antigravity.google/download)
 
 1. **Flash the OS:** Download the official RDK Studio and flash RDK OS Linux onto the RDK X5.
 
@@ -101,7 +101,7 @@ Application Download List:
     ```bash
     pip install matplotlib numpy smbus smbus2
     sudo apt-get install i2c-tools
-    
+
 3. **Clone the Repository:**
    ```bash
    git clone https://github.com/VantageVIII/C.O.D.E-FE-2026.git
