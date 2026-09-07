@@ -97,15 +97,15 @@ Application Download List:
 
 1. **Flash the OS:** Download the official RDK Studio and flash RDK OS Linux onto the RDK X5.
 
-2. **Clone the Repository:**
-   ```bash
-   git clone https://github.com/VantageVIII/C.O.D.E-FE-2026.git
-   cd C.O.D.E-FE-2026
-
-3. **Install Dependencies: Ensure Python 3 is installed. Then install the required libraries:**
+2. **Install Dependencies: Ensure Python 3 is installed. Then install the required libraries:**
     ```bash
     pip install matplotlib numpy smbus smbus2
     sudo apt-get install i2c-tools
+    
+3. **Clone the Repository:**
+   ```bash
+   git clone https://github.com/VantageVIII/C.O.D.E-FE-2026.git
+   cd C.O.D.E-FE-2026
 
 4. **Run the Code: Navigate to the Main Codes directory and execute the competition script:**
     ```bash
