@@ -57,7 +57,8 @@ The MSE-6 is built using carefully selected commercial off-the-shelf components 
 5. **Mount the Sensors:** Attach the custom 3-camera bracket to the upper chassis. Angle the forward cameras outwards at 15° each from the center line. 
 
 ### Electrical Wiring & Integration
-*[PLACEHOLDER: Insert Markdown Image Link to Wiring Diagram here. E.g., `![Wiring Diagram](./media/wiring_diagram.png)`]*
+
+![Wiring Diagram](./Documentation/WiringDiagram.jpg)
 
 1. **Power Routing:** Connect the 3S1P battery to the XL4015 Buck Converter. Route the 5V output of the buck converter through the 5A inline fuse.
 2. **Logic Power:** Connect the output of the 5A fuse to the RDK X5 power input pins. Route a parallel 12V line directly from the battery to the L298N motor driver.
@@ -71,11 +72,17 @@ The MSE-6 is built using carefully selected commercial off-the-shelf components 
 Our software is written in Python and runs on the RDK OS. We utilize a highly optimized Finite State Machine (FSM) to separate our strategies for Round 1 (Open Challenge) and Round 2 (Obstacle Challenge).
 
 ### Round 1: Open Challenge Strategy
+
+[View Round 1 Flowchart (PDF)](./Documentation/flowcharts/Round%201%20Flowchart.pdf)
+
 In Round 1, there are no traffic pillars, so our goal is maximum speed and efficiency.
 1. **Orientation Logic:** The downward-facing camera scans the mat to identify the starting color (blue or orange), determining if the robot must travel clockwise or counterclockwise.
 2. **Heading & Execution:** The robot relies entirely on the DFRobot Gyro for its heading. It is programmed to hug the **outer wall** as closely as possible, allowing for a wider turning radius and maximizing our top speed while remaining stable.
 
 ### Round 2: Obstacle Challenge Strategy
+
+[View Round 2 Flowchart (PDF)](./Documentation/flowcharts/Round%202%20Flowchart.pdf)
+
 In Round 2, the robot must obey the red and green traffic pillars. To guarantee reliability, we split the logic between a "Mapping Lap" and "Execution Laps".
 1. **Orientation Logic:** Similar to Round 1, the downward camera sets the initial orientation.
 2. **Lap 1 (Corner Mapping & Evaluation):** The robot drives forward using gyro heading. Crucially, the robot is programmed to **stop** at the start of a corner turn. It uses the forward-facing HuskyLens to evaluate the traffic pillar situated at the corner. Based on the pillar's color and the robot's current orientation (CW/CCW), the algorithm determines if it needs to execute a **"narrow"** or **"sharp"** turn.
@@ -97,20 +104,25 @@ In Round 2, the robot must obey the red and green traffic pillars. To guarantee 
 
 1. **Flash the OS:** Download the official RDK Studio and flash RDK OS Linux onto the RDK X5.
 
-2. **Install Dependencies: Ensure Python 3 is installed. Then install the required libraries:**
-    ```bash
-    pip install matplotlib numpy smbus smbus2
-    sudo apt-get install i2c-tools
+2. **Install Dependencies:** Ensure Python 3 is installed. Then install the required libraries:
+   ```bash
+   pip install matplotlib numpy smbus smbus2
+   sudo apt-get install i2c-tools
+   ```
 
 3. **Clone the Repository:**
    ```bash
    git clone https://github.com/VantageVIII/C.O.D.E-FE-2026.git
    cd C.O.D.E-FE-2026
+   ```
 
-4. **Run the Code: Navigate to the Main Codes directory and execute the competition script:**
-    ```bash
-    cd Codes/Main\ Codes/
-    python3 main_run.py
+4. **Run the Code:** Navigate to the Main Codes directory and execute the competition script:
+   ```bash
+   cd Codes/Main\ Codes/
+   python3 main_run.py
+   ```
 
-6. **License and Credits**
+---
+
+## 6. License and Credits
 Designed and programmed by Team C.O.D.E. (Jadon Steele & Mischa Miller) for the WRO Future Engineers 2026 Season. Special thanks to HelderBerg Robotics Club for their continued support, and Prints by Paul for 3D manufacturing assistance.
