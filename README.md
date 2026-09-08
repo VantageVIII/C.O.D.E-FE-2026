@@ -1,6 +1,7 @@
 # Team C.O.D.E. - WRO Future Engineers 2026
 
 **Team Name:** Cognitive Operations & Digital Engineering (C.O.D.E.)
+
 **Team Members:** Jadon Steele & Mischa Miller
 **Robot Name:** MSE-6 (Alias: "Mouse")
 
