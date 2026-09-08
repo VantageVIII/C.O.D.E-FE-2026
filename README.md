@@ -1,7 +1,9 @@
 # Team C.O.D.E. - WRO Future Engineers 2026
 
 **Team Name:** Cognitive Operations & Digital Engineering (C.O.D.E.)
+
 **Team Members:** Jadon Steele & Mischa Miller
+
 **Robot Name:** MSE-6 (Alias: "Mouse")
 
 Welcome to the official GitHub repository for Team C.O.D.E. This repository contains all the source code, 3D CAD models, documentation, and media for our autonomous vehicle designed for the World Robot Olympiad (WRO) Future Engineers 2026 competition. 
